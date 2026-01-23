@@ -1,0 +1,350 @@
+INCLUDE "hardware.inc"
+
+DEF CELL_TOTAL EQU 128 
+DEF CELL_ROW EQU 4   ; 4 bytes
+DEF DOUBLE_CELL_ROW EQU 8 ; 8 bytes
+; Game states
+DEF STATE_ITERATING EQU 0
+DEF STATE_PLAYER EQU 1
+
+
+; This routines checks if a select byte is on inside a given register and increases register C if that is the case
+MACRO check_neighbour_bit
+	bit \1, \2	; Check if bit \1 is on inside register \2
+	jp z, .donc_inc\@; If it was 0, skip 'inc c' underneat
+	inc c		; This only runs if the bit check was true
+.donc_inc\@ ; The macro skips here to skip increasing C
+ENDM
+
+
+SECTION "Header", ROM0[$100]
+
+	jp EntryPoint
+
+	ds $150 - @, 0 ; make room for the header
+
+EntryPoint:
+	; don't turn off the lcd outside of VBlank
+WaitFirstVBlank:
+	ld a, [rLY]
+	cp 144
+	jp c, WaitFirstVBlank
+; Turn the LCD off. the screen must be off to safely access VRAM and OAM
+	ld a, 0
+	ld [rLCDC], a
+
+; Copy BG tile data into VRAM
+	ld de, Tiles            ; source in ROM
+	ld hl, _VRAM9000        ; dest in VRAM
+	ld bc, TilesEnd - Tiles ; # of bytes (pixel data) remaining
+	call Memcopy
+
+; Copy BG tilemap into VRAM
+	;ld de, Tilemap              ; source in ROM
+	;ld hl, _SCRN0               ; dest in VRAM
+	;ld bc, TilemapEnd - Tilemap ; # of bytes (tile indices) remaining
+	;call Memcopy
+; The following is a tile writing test
+	ld a, 1
+	ld hl, _SCRN0 
+	ld [hli], a ; Tile 1 at 0,0
+	ld a, 2
+	ld [hli], a ; Tile 2 at 1,0
+
+	ld a, 0        ; value to write to bytes
+	ld b, 160      ; # of bytes to write
+	ld hl, _OAMRAM ; dest
+ClearOam:
+	ld [hli], a
+	dec b
+	jp nz, ClearOam
+
+; init palette display registers
+	ld a, %11100100
+	ld b, 0
+	ld [rBGP], a
+	ld [rOBP0], a
+
+; Init other variables
+	ld a, 0
+	ld [wCurKeys], a
+	ld [wNewKeys], a
+	ld a, 0
+	ld [wState], a
+; Zero out the cells
+	ld b, 0
+	ld hl, wCells 
+clearCells:
+	ld a, 0
+	ld [hli], a
+	;inc b
+	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
+	cp a, CELL_TOTAL; See if (l) is equal to CELL_TOTAL
+	jp nz, clearCells
+
+	; turn the LCD on
+	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
+	ld [rLCDC], a
+
+; Some Debug stuff for testing cells
+; We set different values in the 8x3 block of cells in the top right corner
+	ld a, %11100010
+	ld [wCells+CELL_ROW], a
+	ld [wCells+CELL_ROW*3], a
+	ld a, %10100000
+	ld [wCells+CELL_ROW*2], a
+	ld a, %10000001
+	ld [wCells+CELL_ROW+1], a
+Main: ; The looping point for the game's main loop
+	; Check if the current state is STATE_ITERATING
+	ld a, [wState]
+	cp STATE_ITERATING
+	jp nz, PlayerInput
+	; If inside the iterating state
+	ld hl, wCells + CELL_ROW; The cell byte to load. We start on the second row
+IterateNewRow:
+	; We set C (neighbor count) to zero at the start of each row
+	ld a, 0
+	ld b, a
+	ld d, a
+	ld e, a
+IterateNewByte: ; We jump here each time a byte is being processed inside the GoL iteration process
+	ld a, 0
+	ld c, a
+; The top (d), middle (b) and bottom (e) register should be 0 or the previous iteration's value
+; We need to check their 7th bit as that is equivalent to the left neighbor of our upcoming leftmost bit
+	; Check the top left of byte 7 using the previous iteration's data
+	check_neighbour_bit 7, d ; Top-left bit
+	check_neighbour_bit 7, b ; Left bit
+	check_neighbour_bit 7, e ; Bottom-left bit
+; Here we load the top, middle and bottom bytes in D, B, E
+SetupNewIteratedByte:
+	; We need to save the current byte in B
+	ld a, [hl]	
+	; Test if we should just skip this byte
+	cp 0		; Is the byte empty?
+	jp z, GetNextByte
+	ld b, a		; The current byte is now in B
+	push hl		; Save HL to restore at the end
+	; Move HL to point to the bottom byte
+	ld a, l
+	add a, CELL_ROW 
+	ld l, a
+	ld e, [hl] 	; The bottom byte is now in E
+	; Move HL to point to the top byte
+	ld a, l
+	sub a, DOUBLE_CELL_ROW
+	ld l, a;
+	ld d, [hl] 	; The top byte is now in D
+	ld l, 8		; We will use this as our loop counter in L
+	; This prep phase set up the following registers:
+	; B: The current byte
+	; D: The byte above the current one
+	; E: The byte bellow the current one
+	; L: Our loop iteration counter
+	; C: The neighbor counter (carries over a value from the previous iteration)
+	; Top of the stack : Our old HL address
+; The leftmost bit can only check it's center and rightmost row, and they use different masking values
+; It's leftmost collumn has the neighbors counter pre-calculated by the previous byte's rightmost bit
+
+; Todo, unroll the loop here, and remove the need to do "LShift" by doing 6*8 checks using macros
+CheckLeftmostTopBit:
+	bit 7, d
+	jp z, CheckLeftmostBottomBit
+	inc c
+CheckLeftmostBottomBit:
+	bit 7, e
+	jp z, CheckLeftmostTopRightBit
+	inc c
+CheckLeftmostTopRightBit:
+	bit 6, d
+	jp z, CheckLeftmostRightBit
+	inc c
+CheckLeftmostRightBit:
+	bit 6, b
+	jp z, CheckLeftmostBottomRightBit
+	inc c
+CheckLeftmostBottomRightBit:
+	bit 6, e
+	jp z, DecreaseBitCounter
+	inc c
+	jp DecreaseBitCounter
+CheckTopLeftBit:
+	; Clear c for the next bit
+	ld a, 0
+	ld c, a
+	; top leftmost bit check
+	bit 7, d   ; Is the 'a'th bit in the above byte 'd' on
+	jp z, CheckBottomLeftBit ; If it was not on, skip the neighbor counter increase
+	inc c
+CheckBottomLeftBit:
+	bit 7, e ; Is 'a'th bit in the bottom byte 'e' on?
+	jp z, CheckLeft
+	inc c
+CheckLeft:
+	bit 7, b
+	jp z, CheckTopBit
+	inc c
+CheckTopBit:
+	bit 6, d
+	jp z, CheckBottomBit
+	inc c
+CheckBottomBit:
+	bit 6, e
+	jp z, CheckTopRightBit
+	inc c
+CheckTopRightBit:
+	bit 5, d
+	jp z, CheckBottomRightBit
+	inc c
+CheckBottomRightBit:
+	bit 5, e
+	jp z, CheckRightBit
+	inc c
+CheckRightBit:
+	bit 5, b ; Check the rightmost bit inside the current byte
+	jp z, ShiftBits
+	inc c
+; After a normal iteration (not the first or last bit), we need to left shift all our scanned bytes
+ShiftBits:
+	or a	; Clear carry flag
+	rl b	; Shift the current byte left to 'scan' new bits
+	or a	; Clear carry flag
+	rl d	; Shift the top byte left to 'scan' new bits
+	or a	; Clear carry flag
+	rl e	; Shift the bottom byte left to 'scan' new bits
+DecreaseBitCounter: 
+	ld a, 0
+	dec l ; Decrease our loop iteration counter
+	nop ; Todo : Do our C check and add changes to queue
+	jp nz, CheckTopLeftBit ; This loops to process the next bit, if we are inside bits 0-6
+
+; If we fell out of our loop, it means we are now working on the final, rightmost bit
+EndOfByte:
+	pop hl	; Get the previous loop's HL back from the start
+	ld a, c
+	cp 4 ; We already know the result if c is at least 4, so no need to do extra work
+	jp nc, GetNextByte ; This skips the final 3 bit checks which require memory addressing
+	; Check the top right bit
+	inc l
+	ld a, [hl]
+	bit 7, a
+	jp z, CheckFinalTopRight
+	inc c
+CheckFinalTopRight:
+	ld a, l
+	sub a, CELL_ROW ; Gets us diagonally up from L
+	ld l, a
+	ld a, [hl]	; We get the top right byte
+	bit 7, a	; Do the topright check
+	jp z, CheckFinalBottomRight
+	inc c
+CheckFinalBottomRight:
+	ld a, l
+	add a, DOUBLE_CELL_ROW	; Gets us two rows under the top right, so bottom right
+	ld l, a
+	ld a, [hl]	; We get the bottom right byte
+	bit 7, a	; We do the bottom right check
+	jp z, FinishFinalCheck
+	inc c
+FinishFinalCheck:
+	ld a, l
+	sub a, CELL_ROW+1 ; Get back to the current byte, no way around it
+	ld l, a
+	nop ; Todo : Do our C check and add changes to queue
+	; Reset HL to the current byte
+GetNextByte:
+	inc l ; Get the next bit in line
+	ld a, l ; We will check if we are at the final byte or a row's end
+	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte.
+	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1 ; Check if the byte we just did was the final one
+	jp z, FinishIterating	; If we are done, we finish up
+	; Lets check if we are at a new collumn by checking if L mod 4 gives 0, if so, we will need to clear C
+	; Elseway move to processing the next byte with an uncleared C
+	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
+	jp z, IterateNewRow	; We jump somewhere different if we were at the end of a row, to clear C and other registers
+	; Process the new byte normally
+	jp IterateNewByte
+FinishIterating:
+	nop
+	; todo : Turn on vblank here and set the buffer information
+	; At this point, we need to let game draw a frame before we iterate again (maybe have a double buffer someday)
+	jp Main
+PlayerInput:
+	; Occurs if state is STATE_PLAYER
+	nop ; nothing yet
+	jp Main
+
+
+; Useful routines
+UpdateKeys:
+	; poll controller buttons
+	ld a, P1F_GET_BTN
+	call .onenibble
+	ld b, a ; b3-0 are button input, b7-4 are 1s
+
+	; poll controller dpad
+	ld a, P1F_GET_DPAD
+	call .onenibble
+	swap a ; a7-4 are dpad input, a3-0 are 1s
+
+	; input is active low so we xor with 1s to check for input
+	xor a, b ; a7-4 are dpad input, a3-0 are button input
+	ld b, a
+
+	; release the controller
+	ld a, P1F_GET_NONE
+	ldh [rP1], a
+
+	; combine with previous wCurKeys to make wNewKeys
+	ld a, [wCurKeys]
+	xor a, b ; a = keys that changed state
+	and a, b ; a = keys that changes state to pressed
+	ld [wNewKeys], a
+	ld a, b
+	ld [wCurKeys], a
+	ret
+.onenibble ; load nibble into a
+	ldh [rP1], a ; switch the key matrix. why hram?
+	call .knownret ; burn 10 cycles
+	ldh a, [rP1] ; ignore value while waiting for key matrix to settle
+	ldh a, [rP1]
+	ldh a, [rP1] ; this read counts
+	or a, $F0 ; mask out top nibble
+.knownret
+	ret
+
+; copy bytes from one area to another
+; @param de: source
+; @param hl: destination
+; @param bc: length
+Memcopy:
+	ld a, [de]
+	ld [hli], a
+	inc de
+	dec bc
+	ld a, b
+	or c
+	jp nz, Memcopy
+	ret
+
+; Graphics
+Tiles:
+	INCBIN "tiles.bin"
+TilesEnd:
+
+
+SECTION "Cells", WRAM0, ALIGN[CELL_ROW] ; Needs to be alligned to a multiple of 4 to work (or whatever value CELL_ROW is)
+	wCells: db 	; Get 1 byte for wCells
+	DS CELL_TOTAL-1 ; Keep going to 128 bytes
+SECTION "UpdateBuffer", WRAM0
+	updateBuffer: dw ; first byte is the addr in wCell, second the change	
+	DS CELL_TOTAL*2-1
+
+
+SECTION "Input Variables", WRAM0
+	wCurKeys: db
+	wNewKeys: db
+
+SECTION "Game State", WRAM0
+	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
