@@ -1,6 +1,9 @@
 INCLUDE "hardware.inc"
 
+DEF WORD_SIZE EQU 65535
+
 DEF CELL_TOTAL EQU 128 
+DEF DOUBLE_CELL_TOTAL EQU 256
 DEF CELL_ROW EQU 4   ; 4 bytes
 DEF DOUBLE_CELL_ROW EQU 8 ; 8 bytes
 ; Game states
@@ -8,7 +11,7 @@ DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER EQU 1
 
 
-; This routines checks if a select byte is on inside a given register and increases register C if that is the case
+; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
 	bit \1, \2	; Check if bit \1 is on inside register \2
 	jp z, .donc_inc\@; If it was 0, skip 'inc c' underneat
@@ -16,6 +19,58 @@ MACRO check_neighbour_bit
 .donc_inc\@ ; The macro skips here to skip increasing C
 ENDM
 
+; Set the bit \1 in the buffer at HL, depending on the value currently in C
+; The game will check in register B if the currently checked cell \1 is live or not
+MACRO game_of_life_update_logic
+	ld a, c		; We need to check C
+	bit \1, b	; Is the current cell live?
+	jp z, .dead\@	; Jump if the cell is dead 
+	; Live cell logic
+	nop
+	cp a, 2
+	jp c, .become_dead\@ ; Smaller than 2
+	cp a, 4
+	jp nc, .become_dead\@ ; Bigger or equal to 4
+	jp .post_gol_check\@ ; Do nothing
+.dead\@:
+	; Dead Cell Logic
+	cp a, 3		; Is there exactly 3 neighbours?
+	jp z, .become_live\@	; If 3, become live
+	jp .post_gol_check\@	; Do nothing
+.become_live\@:
+	set \1, [hl]	; Set the bit to become alive in the other buffer
+	jp .post_gol_check\@
+.become_dead\@:
+	res \1, [hl]	; Set the bit to become dead in the other buffer
+.post_gol_check\@:
+ENDM
+
+; The same logic as the above macro but made to use the previous byte's 0th bit info we hid in a variable
+; The status of cell 0 from the previous byte is hidden in C, so we need to check C and then clear it
+MACRO game_of_life_update_logic_previous_byte_data
+	ld a, c		; We need to check C
+	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
+	bit 7, c	; Is the current cell live?
+	jp z, .dead\@	; Jump if the cell is dead 
+	; Live cell logic
+	nop
+	cp a, 2
+	jp c, .become_dead\@ ; Smaller than 2
+	cp a, 4
+	jp nc, .become_dead\@ ; Bigger or equal to 4
+	jp .post_gol_check\@ ; Do nothing
+.dead\@:
+	; Dead Cell Logic
+	cp a, 3		; Is there exactly 3 neighbours?
+	jp z, .become_live\@	; If 3, become live
+	jp .post_gol_check\@	; Do nothing
+.become_live\@:
+	set \1, [hl]	; Set the bit to become alive in the other buffer
+	jp .post_gol_check\@
+.become_dead\@:
+	res \1, [hl]	; Set the bit to become dead in the other buffer
+.post_gol_check\@:
+ENDM
 
 SECTION "Header", ROM0[$100]
 
@@ -71,6 +126,7 @@ ClearOam:
 	ld [wNewKeys], a
 	ld a, 0
 	ld [wState], a
+	ld [wGridToggle], a
 ; Zero out the cells
 	ld b, 0
 	ld hl, wCells 
@@ -79,8 +135,8 @@ clearCells:
 	ld [hli], a
 	;inc b
 	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
-	cp a, CELL_TOTAL; See if (l) is equal to CELL_TOTAL
-	jp nz, clearCells
+	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
+	jp nz, clearCells; If not done, loop
 
 	; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
@@ -100,173 +156,222 @@ Main: ; The looping point for the game's main loop
 	ld a, [wState]
 	cp STATE_ITERATING
 	jp nz, PlayerInput
-	; If inside the iterating state
-	ld hl, wCells + CELL_ROW; The cell byte to load. We start on the second row
+
+	;If inside the iterating state (falling out from checking if in PlayerState)
+	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
+	cp 0
+	jp nz, .choose_buffer2	 ; If not zero, use "wCells2"
+	ld hl, wCells + CELL_ROW ; If zero, use wCells
+	jp .chose_buffer
+.choose_buffer2:
+	ld hl, wCells2 + CELL_ROW ; Using wCells2
+.chose_buffer
+; We jump here each time the GoL rule check hits a new row of bytes
 IterateNewRow:
-	; We set C (neighbor count) to zero at the start of each row
 	ld a, 0
-	ld b, a
-	ld d, a
-	ld e, a
-IterateNewByte: ; We jump here each time a byte is being processed inside the GoL iteration process
-	ld a, 0
-	ld c, a
-; The top (d), middle (b) and bottom (e) register should be 0 or the previous iteration's value
-; We need to check their 7th bit as that is equivalent to the left neighbor of our upcoming leftmost bit
+	ld b, a ; Clear the middle byte
+	ld d, a ; Clear the top byte
+	ld e, a ; Clear the bottom byte
+	ld [hSavedNeighbours], a ; Clear the "in-between bytes" neighbour count
+; We jump here each time the GoL rule check loads a new byte, in the same row
+IterateNewByte:
+	ld c, 0 ; We clear C (neighbour count) since we are counting for a new GoL cell one
 	; Check the top left of byte 7 using the previous iteration's data
-	check_neighbour_bit 7, d ; Top-left bit
-	check_neighbour_bit 7, b ; Left bit
-	check_neighbour_bit 7, e ; Bottom-left bit
+	check_neighbour_bit 0, d ; Top-left bit
+	check_neighbour_bit 0, b ; Left bit
+	check_neighbour_bit 0, e ; Bottom-left bit
 ; Here we load the top, middle and bottom bytes in D, B, E
 SetupNewIteratedByte:
-	; We need to save the current byte in B
-	ld a, [hl]	
-	; Test if we should just skip this byte
-	cp 0		; Is the byte empty?
-	jp z, GetNextByte
-	ld b, a		; The current byte is now in B
-	push hl		; Save HL to restore at the end
+	push hl		; We save HL for later
+	ld b, [hl]	; The current byte is now in B
 	; Move HL to point to the bottom byte
 	ld a, l
-	add a, CELL_ROW 
+	add a, CELL_ROW
 	ld l, a
 	ld e, [hl] 	; The bottom byte is now in E
 	; Move HL to point to the top byte
-	ld a, l
+	ld l, a
 	sub a, DOUBLE_CELL_ROW
 	ld l, a;
 	ld d, [hl] 	; The top byte is now in D
-	ld l, 8		; We will use this as our loop counter in L
-	; This prep phase set up the following registers:
-	; B: The current byte
-	; D: The byte above the current one
-	; E: The byte bellow the current one
-	; L: Our loop iteration counter
-	; C: The neighbor counter (carries over a value from the previous iteration)
-	; Top of the stack : Our old HL address
-; The leftmost bit can only check it's center and rightmost row, and they use different masking values
-; It's leftmost collumn has the neighbors counter pre-calculated by the previous byte's rightmost bit
+	; Make HL point to the other buffer
+	add a, CELL_ROW
+	ld l, a ; We get back the original address
+	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
+	cp 0
+	jp nz, .using_buffer2		;
+	ld a, l
+	add a, CELL_TOTAL
+	ld l, a				; We are using buffer1 bytes, so we need to write to buffer2
+	jp .chose_buffer
+.using_buffer2:
+	ld a, l
+	sub a, CELL_TOTAL
+	ld l, a				; We are using buffer2 bytes, so we need to write to buffer1
+.chose_buffer:
+; This prep phase set up the following registers:
+; B: The current byte
+; D: The byte above the current one
+; E: The byte bellow the current one
+; C: The neighbor counter (already has 0-3 count from the left of byte 7)
+; HL : The equivalent in memory to our current address in the other buffer
 
-; Todo, unroll the loop here, and remove the need to do "LShift" by doing 6*8 checks using macros
-CheckLeftmostTopBit:
-	bit 7, d
-	jp z, CheckLeftmostBottomBit
-	inc c
-CheckLeftmostBottomBit:
-	bit 7, e
-	jp z, CheckLeftmostTopRightBit
-	inc c
-CheckLeftmostTopRightBit:
-	bit 6, d
-	jp z, CheckLeftmostRightBit
-	inc c
-CheckLeftmostRightBit:
-	bit 6, b
-	jp z, CheckLeftmostBottomRightBit
-	inc c
-CheckLeftmostBottomRightBit:
-	bit 6, e
-	jp z, DecreaseBitCounter
-	inc c
-	jp DecreaseBitCounter
-CheckTopLeftBit:
-	; Clear c for the next bit
-	ld a, 0
-	ld c, a
-	; top leftmost bit check
-	bit 7, d   ; Is the 'a'th bit in the above byte 'd' on
-	jp z, CheckBottomLeftBit ; If it was not on, skip the neighbor counter increase
-	inc c
-CheckBottomLeftBit:
-	bit 7, e ; Is 'a'th bit in the bottom byte 'e' on?
-	jp z, CheckLeft
-	inc c
-CheckLeft:
-	bit 7, b
-	jp z, CheckTopBit
-	inc c
-CheckTopBit:
-	bit 6, d
-	jp z, CheckBottomBit
-	inc c
-CheckBottomBit:
-	bit 6, e
-	jp z, CheckTopRightBit
-	inc c
-CheckTopRightBit:
-	bit 5, d
-	jp z, CheckBottomRightBit
-	inc c
-CheckBottomRightBit:
-	bit 5, e
-	jp z, CheckRightBit
-	inc c
-CheckRightBit:
-	bit 5, b ; Check the rightmost bit inside the current byte
-	jp z, ShiftBits
-	inc c
-; After a normal iteration (not the first or last bit), we need to left shift all our scanned bytes
-ShiftBits:
-	or a	; Clear carry flag
-	rl b	; Shift the current byte left to 'scan' new bits
-	or a	; Clear carry flag
-	rl d	; Shift the top byte left to 'scan' new bits
-	or a	; Clear carry flag
-	rl e	; Shift the bottom byte left to 'scan' new bits
-DecreaseBitCounter: 
-	ld a, 0
-	dec l ; Decrease our loop iteration counter
-	nop ; Todo : Do our C check and add changes to queue
-	jp nz, CheckTopLeftBit ; This loops to process the next bit, if we are inside bits 0-6
+	; Bit 7 Checks (started using the previous d,b,e values earlier)
+	; Top
+	check_neighbour_bit 7, d ; Top bit
+	check_neighbour_bit 7, e ; Bottom bit
+	; Right
+	check_neighbour_bit 6, d ; Top-Right bit
+	check_neighbour_bit 6, b ; Right bit
+	check_neighbour_bit 6, e ; Bottom bit
+	game_of_life_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
 
-; If we fell out of our loop, it means we are now working on the final, rightmost bit
-EndOfByte:
-	pop hl	; Get the previous loop's HL back from the start
-	ld a, c
-	cp 4 ; We already know the result if c is at least 4, so no need to do extra work
-	jp nc, GetNextByte ; This skips the final 3 bit checks which require memory addressing
-	; Check the top right bit
-	inc l
-	ld a, [hl]
-	bit 7, a
-	jp z, CheckFinalTopRight
-	inc c
-CheckFinalTopRight:
-	ld a, l
-	sub a, CELL_ROW ; Gets us diagonally up from L
-	ld l, a
-	ld a, [hl]	; We get the top right byte
-	bit 7, a	; Do the topright check
-	jp z, CheckFinalBottomRight
-	inc c
-CheckFinalBottomRight:
-	ld a, l
-	add a, DOUBLE_CELL_ROW	; Gets us two rows under the top right, so bottom right
-	ld l, a
-	ld a, [hl]	; We get the bottom right byte
-	bit 7, a	; We do the bottom right check
-	jp z, FinishFinalCheck
-	inc c
-FinishFinalCheck:
-	ld a, l
-	sub a, CELL_ROW+1 ; Get back to the current byte, no way around it
-	ld l, a
-	nop ; Todo : Do our C check and add changes to queue
-	; Reset HL to the current byte
+	; Finishing bit 0 of the previous loop
+	; Finishing the loop's rightmost bit
+	ldh a, [hSavedNeighbours]
+	ld c, a ; Load the previous C
+	check_neighbour_bit 7, d ; Top-Right bit
+	check_neighbour_bit 7, b ; Right bit
+	check_neighbour_bit 7, e ; Bottom-Right bit
+	dec l	; We get to the previous byte
+	game_of_life_update_logic_previous_byte_data 0 ; Bit 0 from the previous loop
+	inc l	; We get back to the current byte
+
+	; Bit 6 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 7, d ; Top-Left bit
+	check_neighbour_bit 7, b ; Left bit
+	check_neighbour_bit 7, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 6, d ; Top bit
+	check_neighbour_bit 6, e ; Bottom bit
+	; Right
+	check_neighbour_bit 5, d ; Top-Left bit
+	check_neighbour_bit 5, b ; Left bit
+	check_neighbour_bit 5, e ; Bottom-Left bit
+	game_of_life_update_logic 6
+
+	; Bit 5 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 6, d ; Top-Left bit
+	check_neighbour_bit 6, b ; Left bit
+	check_neighbour_bit 6, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 5, d ; Top bit
+	check_neighbour_bit 5, e ; Bottom bit
+	; Right
+	check_neighbour_bit 4, d ; Top-Left bit
+	check_neighbour_bit 4, b ; Left bit
+	check_neighbour_bit 4, e ; Bottom-Left bit
+	game_of_life_update_logic 5
+
+	; Bit 4 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 5, d ; Top-Left bit
+	check_neighbour_bit 5, b ; Left bit
+	check_neighbour_bit 5, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 4, d ; Top bit
+	check_neighbour_bit 4, e ; Bottom bit
+	; Right
+	check_neighbour_bit 3, d ; Top-Left bit
+	check_neighbour_bit 3, b ; Left bit
+	check_neighbour_bit 3, e ; Bottom-Left bit
+	game_of_life_update_logic 4
+
+
+	; Bit 3 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 4, d ; Top-Left bit
+	check_neighbour_bit 4, b ; Left bit
+	check_neighbour_bit 4, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 3, d ; Top bit
+	check_neighbour_bit 3, e ; Bottom bit
+	; Right
+	check_neighbour_bit 2, d ; Top-Left bit
+	check_neighbour_bit 2, b ; Left bit
+	check_neighbour_bit 2, e ; Bottom-Left bit
+	game_of_life_update_logic 3
+
+	; Bit 2 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 3, d ; Top-Left bit
+	check_neighbour_bit 3, b ; Left bit
+	check_neighbour_bit 3, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 2, d ; Top bit
+	check_neighbour_bit 2, e ; Bottom bit
+	; Right
+	check_neighbour_bit 1, d ; Top-Left bit
+	check_neighbour_bit 1, b ; Left bit
+	check_neighbour_bit 1, e ; Bottom-Left bit
+	game_of_life_update_logic 2
+
+	; Bit 1 checks
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 2, d ; Top-Left bit
+	check_neighbour_bit 2, b ; Left bit
+	check_neighbour_bit 2, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 1, d ; Top bit
+	check_neighbour_bit 1, e ; Bottom bit
+	; Right
+	check_neighbour_bit 0, d ; Top-Left bit
+	check_neighbour_bit 0, b ; Left bit
+	check_neighbour_bit 0, e ; Bottom-Left bit
+	game_of_life_update_logic 1
+
+	; Bit 0 checks (left and top only)
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 1, d ; Top-Left bit
+	check_neighbour_bit 1, b ; Left bit
+	check_neighbour_bit 1, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 0, d ; Top bit
+	check_neighbour_bit 0, e ; Bottom bit
+
+	; Save some data from bit 0 of this loop into HRAM to reuse next loop
+	bit 0, b 	; We need to remember byte 0 for later
+	jp z, .skip_saving_old_b_in_c
+	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
+.skip_saving_old_b_in_c
+	ld a, c 
+	ldh [hSavedNeighbours], a ; We'll recover this value next iteration once we loaded our new bytes to the right
+; Setup the next memory address in HL
 GetNextByte:
+	pop hl
 	inc l ; Get the next bit in line
+
+	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte from the size to test if we are done
+	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
+	cp 0
+	jp nz, .using_buffer2		;
 	ld a, l ; We will check if we are at the final byte or a row's end
-	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte.
-	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1 ; Check if the byte we just did was the final one
-	jp z, FinishIterating	; If we are done, we finish up
-	; Lets check if we are at a new collumn by checking if L mod 4 gives 0, if so, we will need to clear C
-	; Elseway move to processing the next byte with an uncleared C
+	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
+	jp z, FinishIterating			; If we are done, we exit the loop
+	jp .done_testing_if_done
+.using_buffer2:
+	ld a, l ; We will check if we are at the final byte or a row's end
+	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
+	jp z, FinishIterating			; If we are done, we exit the loop
+.done_testing_if_done:
+	; We jump to the new row looping point if (HL modulo 4) is 0, to clear extra registers
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	jp z, IterateNewRow	; We jump somewhere different if we were at the end of a row, to clear C and other registers
-	; Process the new byte normally
-	jp IterateNewByte
-FinishIterating:
 	nop
+	jp z, IterateNewRow	; Jump to the new row code, which clears the b,d,e registers
+	jp IterateNewByte	; Iterate over the next byte if we didn't exit and didn't jump to a new row
+FinishIterating:
+	ld a, [wGridToggle]
+	cpl a			; Flip wGridToggle to iterate the other buffer now
+	ld [wGridToggle], a
 	; todo : Turn on vblank here and set the buffer information
 	; At this point, we need to let game draw a frame before we iterate again (maybe have a double buffer someday)
 	jp Main
@@ -337,9 +442,10 @@ TilesEnd:
 SECTION "Cells", WRAM0, ALIGN[CELL_ROW] ; Needs to be alligned to a multiple of 4 to work (or whatever value CELL_ROW is)
 	wCells: db 	; Get 1 byte for wCells
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
-SECTION "UpdateBuffer", WRAM0
-	updateBuffer: dw ; first byte is the addr in wCell, second the change	
-	DS CELL_TOTAL*2-1
+	wCells2: db	; Other buffer
+	DS CELL_TOTAL-1 ; Keep going to 128 bytes
+SECTION "WRAM", WRAM0
+	wGridToggle: db	; Flips on and off between iterations to determine the cell buffer used
 
 
 SECTION "Input Variables", WRAM0
@@ -348,3 +454,6 @@ SECTION "Input Variables", WRAM0
 
 SECTION "Game State", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
+
+SECTION "High Ram", HRAM
+	hSavedNeighbours: db
