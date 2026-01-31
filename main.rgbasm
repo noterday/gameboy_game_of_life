@@ -24,9 +24,22 @@ ENDM
 MACRO game_of_life_update_logic
 	ld a, c		; We need to check C
 	bit \1, b	; Is the current cell live?
+	game_of_life_logic_inner \1
+ENDM
+
+; The same logic as the above macro but made to use the previous byte's 0th bit info we hid in a variable
+; The status of cell 0 from the previous byte is hidden in C, so we need to check C and then clear it
+MACRO game_of_life_update_logic_previous_byte_data
+	ld a, c		; We need to check C
+	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
+	bit 7, c	; Is the current cell live?
+	game_of_life_logic_inner 0
+ENDM
+
+; Used in the two macros above exclusively for code cleanliness. See their comments.
+MACRO game_of_life_logic_inner
 	jp z, .dead\@	; Jump if the cell is dead 
 	; Live cell logic
-	nop
 	cp a, 2
 	jp c, .become_dead\@ ; Smaller than 2
 	cp a, 4
@@ -37,41 +50,19 @@ MACRO game_of_life_update_logic
 	cp a, 3		; Is there exactly 3 neighbours?
 	jp z, .become_live\@	; If 3, become live
 	jp .become_dead\@	; Do nothing
+;.pre_become_life_vram_stuff_only_if_needed:
+; ld hl , something_something\1 ; We use the fact that we
+;
+;
+; POP DE (recover)			+ 4
+
 .become_live\@:
 	set \1, [hl]	; Set the bit to become alive in the other buffer
 	jp .post_gol_check\@
-.become_dead\@:
+.become_dead\@
 	res \1, [hl]	; Set the bit to become dead in the other buffer
 .post_gol_check\@:
 ENDM
-
-; The same logic as the above macro but made to use the previous byte's 0th bit info we hid in a variable
-; The status of cell 0 from the previous byte is hidden in C, so we need to check C and then clear it
-MACRO game_of_life_update_logic_previous_byte_data
-	ld a, c		; We need to check C
-	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
-	bit 7, c	; Is the current cell live?
-	jp z, .dead\@	; Jump if the cell is dead 
-	; Live cell logic
-	nop
-	cp a, 2
-	jp c, .become_dead\@ ; Smaller than 2
-	cp a, 4
-	jp nc, .become_dead\@ ; Bigger or equal to 4
-	jp .post_gol_check\@ ; Do nothing
-.dead\@:
-	; Dead Cell Logic
-	cp a, 3		; Is there exactly 3 neighbours?
-	jp z, .become_live\@	; If 3, become live
-	jp .post_gol_check\@	; Do nothing
-.become_live\@:
-	set \1, [hl]	; Set the bit to become alive in the other buffer
-	jp .post_gol_check\@
-.become_dead\@:
-	res \1, [hl]	; Set the bit to become dead in the other buffer
-.post_gol_check\@:
-ENDM
-
 SECTION "Header", ROM0[$100]
 
 	jp EntryPoint
@@ -144,13 +135,11 @@ clearCells:
 
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
-	ld a, %11100010
-	ld [wCells+CELL_ROW], a
-	ld [wCells+CELL_ROW*3], a
+	ld a, %11100000
+	ld [wCells+5+CELL_ROW+CELL_ROW], a
+	ld [wCells+5+CELL_ROW+CELL_ROW*3], a
 	ld a, %10100000
-	ld [wCells+CELL_ROW*2], a
-	ld a, %10000001
-	ld [wCells+CELL_ROW+1], a
+	ld [wCells+5+CELL_ROW+CELL_ROW*2], a
 Main: ; The looping point for the game's main loop
 	; Check if the current state is STATE_ITERATING
 	ld a, [wState]
@@ -172,15 +161,9 @@ IterateNewRow:
 	ld b, a ; Clear the middle byte
 	ld d, a ; Clear the top byte
 	ld e, a ; Clear the bottom byte
-	ld [hSavedNeighbours], a ; Clear the "in-between bytes" neighbour count
+	ld [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
+	ld [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
 ; We jump here each time the GoL rule check loads a new byte, in the same row
-IterateNewByte:
-	ld c, 0 ; We clear C (neighbour count) since we are counting for a new GoL cell one
-	; Check the top left of byte 7 using the previous iteration's data
-	check_neighbour_bit 0, d ; Top-left bit
-	check_neighbour_bit 0, b ; Left bit
-	check_neighbour_bit 0, e ; Bottom-left bit
-; Here we load the top, middle and bottom bytes in D, B, E
 SetupNewIteratedByte:
 	push hl		; We save HL for later
 	ld b, [hl]	; The current byte is now in B
@@ -215,9 +198,29 @@ SetupNewIteratedByte:
 ; E: The byte bellow the current one
 ; C: The neighbor counter (already has 0-3 count from the left of byte 7)
 ; HL : The equivalent in memory to our current address in the other buffer
+	 
+; Finishing bit 0 of the previous loop
+Bit0Check:
+	ld a, l			; We check if at start of row, to skip this part
+	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
+	jp z, Bit7Check		; Skip this step if this is the start of a row
+	ldh a, [hSavedNeighboursBit0]
+	ld c, a ; Load the previous C
+	check_neighbour_bit 7, d ; Top-Right bit
+	check_neighbour_bit 7, b ; Right bit
+	check_neighbour_bit 7, e ; Bottom-Right bit
+	dec l	; We get to the previous byte
+	game_of_life_update_logic_previous_byte_data ; Bit 0 from the previous loop
+	; Note : Only at this point have we finished updating the previous iteration's byte
+	; At this very moment, before we 'inc l', HL is pointing to the up to date byte into our second buffer
+	; That byte needs to be cleaned up and updated
+	inc l	; We get back to the current byte
 
+Bit7Check:
 	; Bit 7 Checks (started using the previous d,b,e values earlier)
 	; Top
+	ldh a, [hSavedNeighboursBit7]
+	ld c, a
 	check_neighbour_bit 7, d ; Top bit
 	check_neighbour_bit 7, e ; Bottom bit
 	; Right
@@ -225,23 +228,7 @@ SetupNewIteratedByte:
 	check_neighbour_bit 6, b ; Right bit
 	check_neighbour_bit 6, e ; Bottom bit
 	game_of_life_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
-
-	; Finishing bit 0 of the previous loop
-	; Finishing the loop's rightmost bit
-	ld a, l			; We ar gonna check if at start of row, to skip this part
-	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	jp z, Bit6to1		; If at the start of row, skip doing bit 0 from the previous byte
-	ldh a, [hSavedNeighbours]
-	ld c, a ; Load the previous C
-	check_neighbour_bit 7, d ; Top-Right bit
-	check_neighbour_bit 7, b ; Right bit
-	check_neighbour_bit 7, e ; Bottom-Right bit
-	dec l	; We get to the previous byte
-	game_of_life_update_logic_previous_byte_data 0 ; Bit 0 from the previous loop
-	inc l	; We get back to the current byte
-
-Bit6to1:
-
+Bit6to1Check:
 	; Bit 6 checks
 	ld c, 0 ; Clear C
 	; Left
@@ -343,16 +330,35 @@ Bit6to1:
 	check_neighbour_bit 0, d ; Top bit
 	check_neighbour_bit 0, e ; Bottom bit
 
-	; Save some data from bit 0 of this loop into HRAM to reuse next loop
+	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
 	bit 0, b 	; We need to remember byte 0 for later
-	jp z, .skip_saving_old_b_in_c
+	jp z, .dont_set_extra_bit
 	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
-.skip_saving_old_b_in_c
+.dont_set_extra_bit
 	ld a, c 
-	ldh [hSavedNeighbours], a ; We'll recover this value next iteration once we loaded our new bytes to the right
+	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
+	
+	; Save the neighbours we will need for bit 7
+	ld c, 0 ; Clear C
+	check_neighbour_bit 0, d ; Top-Left bit
+	check_neighbour_bit 0, b ; Top-Left bit
+	check_neighbour_bit 0, e ; Bottom-Left bit
+	ld a, c 
+	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
+
 ; Setup the next memory address in HL
 GetNextByte:
+; VRAM updates ( TEST )
+;	dec l 	; We need to look back at the old byte again for a bit
+;	ld h, 0
+;	ld a, [hl] ; We load the previous byte into A
+;	ld h, 128
+;	xor a, [hl] ; Here, A should only contain the "Changed" bits
+;	9 cycle overhead, then we gotta do a bit 8 bit loop to check which byte is on.......
+	
+	; Inc for the next byte
 	pop hl
+	; Here, The popped value is the current buffer's current byte
 	inc l ; Get the next bit in line
 
 	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte from the size to test if we are done
@@ -372,7 +378,7 @@ GetNextByte:
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
 	nop
 	jp z, IterateNewRow	; Jump to the new row code, which clears the b,d,e registers
-	jp IterateNewByte	; Iterate over the next byte if we didn't exit and didn't jump to a new row
+	jp SetupNewIteratedByte	; Iterate over the next byte if we didn't exit and didn't jump to a new row
 FinishIterating:
 	ld a, [wGridToggle]
 	cpl a			; Flip wGridToggle to iterate the other buffer now
@@ -451,6 +457,9 @@ SECTION "Cells", WRAM0, ALIGN[CELL_ROW] ; Needs to be alligned to a multiple of 
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 SECTION "WRAM", WRAM0
 	wGridToggle: db	; Flips on and off between iterations to determine the cell buffer used
+	wTileQueueCursor: db		; The byte to write to next
+	wTileUpdateQueue: db		; VRAM update queue
+	DS ((CELL_TOTAL*4)-1) - DOUBLE_CELL_ROW		; In worst case scenario, if you set every cell to be alive
 
 
 SECTION "Input Variables", WRAM0
@@ -461,4 +470,5 @@ SECTION "Game State", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
 
 SECTION "High Ram", HRAM
-	hSavedNeighbours: db
+	hSavedNeighboursBit0: db
+	hSavedNeighboursBit7: db
