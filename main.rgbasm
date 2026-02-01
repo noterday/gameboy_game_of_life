@@ -50,12 +50,6 @@ MACRO game_of_life_logic_inner
 	cp a, 3		; Is there exactly 3 neighbours?
 	jp z, .become_live\@	; If 3, become live
 	jp .become_dead\@	; Do nothing
-;.pre_become_life_vram_stuff_only_if_needed:
-; ld hl , something_something\1 ; We use the fact that we
-;
-;
-; POP DE (recover)			+ 4
-
 .become_live\@:
 	set \1, [hl]	; Set the bit to become alive in the other buffer
 	jp .post_gol_check\@
@@ -63,6 +57,19 @@ MACRO game_of_life_logic_inner
 	res \1, [hl]	; Set the bit to become dead in the other buffer
 .post_gol_check\@:
 ENDM
+
+MACRO add_cell_updates_to_vram_queue 
+	bit \1, d	; We test the given bit from the byte D
+	jp z, .skip_vram_queue_update\@	; If D is off, we skip doing work
+	ld a, b
+	ld [hli], a
+	ld a, c
+	ld [hli], a
+.skip_vram_queue_update\@:	; No matter what, increase BC (our VRAM index)
+	inc bc
+ENDM
+
+
 SECTION "Header", ROM0[$100]
 
 	jp EntryPoint
@@ -115,9 +122,10 @@ ClearOam:
 	ld a, 0
 	ld [wCurKeys], a
 	ld [wNewKeys], a
-	ld a, 0
 	ld [wState], a
 	ld [wGridToggle], a
+	ld a, LOW(wTileUpdateQueue)
+	ld [wTileQueueCursor], a
 ; Zero out the cells
 	ld b, 0
 	ld hl, wCells 
@@ -349,13 +357,48 @@ Bit6to1Check:
 ; Setup the next memory address in HL
 GetNextByte:
 ; VRAM updates ( TEST )
-;	dec l 	; We need to look back at the old byte again for a bit
-;	ld h, 0
-;	ld a, [hl] ; We load the previous byte into A
-;	ld h, 128
-;	xor a, [hl] ; Here, A should only contain the "Changed" bits
-;	9 cycle overhead, then we gotta do a bit 8 bit loop to check which byte is on.......
-	
+	; Compare the previous byte in both buffers to find changes
+	dec l 		; We need to look back at the old byte again for a bit
+	ld h, HIGH(wCells)
+	set 7, l	; This gives us the byte in buffer one, given it is 128 byte wide
+	ld a, [hl]
+	res 7, l	; This gives us the byte in buffer two
+	xor a, [hl] 	; Here, A should only contain the "Changed" bits
+	ld d, a		; D is our list of bits to queue up for vram updates
+
+	; Multiply HL by 8 to get into VRAM dimensions
+	; TODO : This whole section is actual nonsense and doesn't work at all...
+	ld h, 0		; We want to multiply l only
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	; Get HL to point into the VRAM area
+	ld b, HIGH(_SCRN0)
+	ld c, LOW(_SCRN0)
+	add hl, bc
+	ld b, h
+	ld c, l		; BD is now a valid VRAM address, where our byte of cell starts
+
+	; Set HL to a position in the tile queue
+	ld h, HIGH(wTileUpdateQueue)
+	ld a, [wTileQueueCursor]
+	ld l, a 	; HL is now the next queue address to update
+
+	; For updates in each bit
+	add_cell_updates_to_vram_queue 7
+	add_cell_updates_to_vram_queue 6
+	add_cell_updates_to_vram_queue 5
+	add_cell_updates_to_vram_queue 4
+	add_cell_updates_to_vram_queue 3
+	add_cell_updates_to_vram_queue 2
+	add_cell_updates_to_vram_queue 1
+	add_cell_updates_to_vram_queue 0
+
+	; Save the cursor position for the next iteration
+	ld a, l
+	ld [wTileQueueCursor], a
+
+; Getting the next byte and loop management
 	; Inc for the next byte
 	pop hl
 	; Here, The popped value is the current buffer's current byte
@@ -450,16 +493,16 @@ Tiles:
 TilesEnd:
 
 
-SECTION "Cells", WRAM0, ALIGN[CELL_ROW] ; Needs to be alligned to a multiple of 4 to work (or whatever value CELL_ROW is)
+SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to work (or whatever value CELL_ROW is)
 	wCells: db 	; Get 1 byte for wCells
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 	wCells2: db	; Other buffer
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 SECTION "WRAM", WRAM0
 	wGridToggle: db	; Flips on and off between iterations to determine the cell buffer used
-	wTileQueueCursor: db		; The byte to write to next
+	wTileQueueCursor: db 		; The low-byte of the address to write to next in 'wTileUpdateQueue"
 	wTileUpdateQueue: db		; VRAM update queue
-	DS ((CELL_TOTAL*4)-1) - DOUBLE_CELL_ROW		; In worst case scenario, if you set every cell to be alive
+	DS 255				; A reasonable amount for now but we could run out
 
 
 SECTION "Input Variables", WRAM0
