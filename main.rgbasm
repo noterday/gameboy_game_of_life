@@ -69,11 +69,73 @@ MACRO add_cell_updates_to_vram_queue
 	inc bc
 ENDM
 
+; See https://evie.gbdev.io/blog/interrupts.html
+SECTION "VBlank Interrupt", ROM0[$0040]
+VBlankInterrupt:
+	push af
+	push bc
+	push de
+	push hl
+	jp VBlankHandler
+
+
+; The VBLANK interrupt
+SECTION "VBlank Handler", ROM0
+VBlankHandler:
+	; Put my code here
+	; The queue of tiles is a list of addresses in VRAM that must be flipped on or OFF
+	; Check if the bit in hram that tells you if you're allowed to update cells, if not jump to the end
+	; Load the current cursor variable hTileQueueCursor and iterate it backward until it equals the starting value
+	; meaning that hTileQueueCursor is == to wTileUpdateQueue. That's how you know you're done.
+	; For each tile along the way, read the value, load the vram byte and flip it.
+	ld a, [hCellTileMapUpdateReady]
+	cp 0
+	jp z, .vblank_done
+	; This code runs only in real vblank period
+	ld a, LOW(wTileUpdateQueue)
+	ld e, a		; Current cursor end point
+	ld a, HIGH(wTileUpdateQueue)
+	ld b, a		; B is our stopping point (the start of the queue)
+	ld a, [hTileQueueCursor]
+	ld c, a		; C is our current tile index, it must descend to reach B
+	dec c		; The cursor normally points to the cell about to be written to next, so it is off by one
+	; TODO : Make a different iterator than C == B because that could run for too many tiles
+	; Instead, from the C (cursor) and B (start of queue) values, calculate a number of cells that can be iterated
+	; If the distance between the two if more than 32, only do 32, otherwise, do them all
+.cell_update_loop:
+	; Load the VRAM tile to update
+	ld a, [bc] ; Load the low VRAM byte
+	ld l, a
+	dec c	; Decrease our cursor by 1
+	ld a, [bc] ; Load the high VRAM byte
+	ld h, a
+	ld a, [hl] ; Load the VRAM byte to flip
+	dec c	; Dec again before the next byte
+	; Update the tile
+	cpl a			; Invert the VRAM bit
+	and a, %00000001	; Keep only the first bit
+	ld [hl], a		; Save the change
+	; Loop management
+	ld a, c		; Load C in A for a test
+	cp e		; If the cursor reached the starting point, lets stop
+	jp nc, .cell_update_loop	; This loops if we arent done
+	; Finish up
+	; Turn the cell tilemap update flag off
+	ld a, 0
+	ld [hCellTileMapUpdateReady], a
+	ld a, LOW(wTileUpdateQueue)
+	ld [hTileQueueCursor], a
+.vblank_done
+	; Pop the registers back
+	pop hl
+	pop de
+	pop bc
+	pop af
+	reti
+
 
 SECTION "Header", ROM0[$100]
-
 	jp EntryPoint
-
 	ds $150 - @, 0 ; make room for the header
 
 EntryPoint:
@@ -98,11 +160,6 @@ WaitFirstVBlank:
 	;ld bc, TilemapEnd - Tilemap ; # of bytes (tile indices) remaining
 	;call Memcopy
 ; The following is a tile writing test
-	ld a, 1
-	ld hl, _SCRN0 
-	ld [hli], a ; Tile 1 at 0,0
-	ld a, 2
-	ld [hli], a ; Tile 2 at 1,0
 
 	ld a, 0        ; value to write to bytes
 	ld b, 160      ; # of bytes to write
@@ -119,13 +176,17 @@ ClearOam:
 	ld [rOBP0], a
 
 ; Init other variables
+	; Stuff we init to 0
 	ld a, 0
 	ld [wCurKeys], a
 	ld [wNewKeys], a
 	ld [wState], a
 	ld [wGridToggle], a
+	ld [hCellTileMapUpdateReady], a
+	; Queue variables
 	ld a, LOW(wTileUpdateQueue)
-	ld [wTileQueueCursor], a
+	ld [hTileQueueCursor], a
+
 ; Zero out the cells
 	ld b, 0
 	ld hl, wCells 
@@ -137,24 +198,51 @@ clearCells:
 	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
 	jp nz, clearCells; If not done, loop
 
+; Some Debug stuff for testing cells
+; We set different values in the 8x3 block of cells in the top right corner
+	; Todo : This needs to be a procedure that also sets the graphics
+	ld a, %11100000
+	ld [wCells+(1+CELL_ROW*4)], a
+	ld [wCells+(1+CELL_ROW*6)], a
+	ld a, %10100000
+	ld [wCells+(1+CELL_ROW*5)], a
+	ld a, 1
+	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+0], a
+	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+1], a
+	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
+	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+0], a
+	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+2], a
+	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+0], a
+	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+1], a
+	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+2], a
+	
 	; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
 	ld [rLCDC], a
 
-; Some Debug stuff for testing cells
-; We set different values in the 8x3 block of cells in the top right corner
-	ld a, %11100000
-	ld [wCells+5+CELL_ROW+CELL_ROW], a
-	ld [wCells+5+CELL_ROW+CELL_ROW*3], a
-	ld a, %10100000
-	ld [wCells+5+CELL_ROW+CELL_ROW*2], a
+; HW interrupt code
+	; Clear interrupt flags
+	ld a, 0
+	ldh [rIF], a
+	; Turn on interrupts
+	ld a, IEF_VBLANK
+	ldh [rIE], a
+	ei	; Turn on interrupts globally
+
+
 Main: ; The looping point for the game's main loop
 	; Check if the current state is STATE_ITERATING
 	ld a, [wState]
 	cp STATE_ITERATING
 	jp nz, PlayerInput
 
-	;If inside the iterating state (falling out from checking if in PlayerState)
+	; If inside the iterating state (falling out from checking if in PlayerState)
+	; Loop if we are waiting for the screen to update
+	; Todo : Go to some halt state here instead
+	ldh a, [hCellTileMapUpdateReady]
+	cp 0
+	jp nz, Main
+	; If we are allowed to iterate, choose which buffer to use now
 	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
 	cp 0
 	jp nz, .choose_buffer2	 ; If not zero, use "wCells2"
@@ -163,6 +251,7 @@ Main: ; The looping point for the game's main loop
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW ; Using wCells2
 .chose_buffer
+; Start of the iteration process
 ; We jump here each time the GoL rule check hits a new row of bytes
 IterateNewRow:
 	ld a, 0
@@ -381,7 +470,7 @@ GetNextByte:
 
 	; Set HL to a position in the tile queue
 	ld h, HIGH(wTileUpdateQueue)
-	ld a, [wTileQueueCursor]
+	ld a, [hTileQueueCursor]
 	ld l, a 	; HL is now the next queue address to update
 
 	; For updates in each bit
@@ -396,7 +485,7 @@ GetNextByte:
 
 	; Save the cursor position for the next iteration
 	ld a, l
-	ld [wTileQueueCursor], a
+	ld [hTileQueueCursor], a
 
 ; Getting the next byte and loop management
 	; Inc for the next byte
@@ -426,7 +515,9 @@ FinishIterating:
 	ld a, [wGridToggle]
 	cpl a			; Flip wGridToggle to iterate the other buffer now
 	ld [wGridToggle], a
-	; todo : Turn on vblank here and set the buffer information
+	ld a, 1
+	ld [hCellTileMapUpdateReady], a		; Tell VBlank routine that it can now update tiles
+	; TODO: Set a variable in HRAM to communicate that there are tiles to process. The next iteration will wait for that to be off
 	; At this point, we need to let game draw a frame before we iterate again (maybe have a double buffer someday)
 	jp Main
 PlayerInput:
@@ -499,9 +590,8 @@ SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to wo
 	wCells2: db	; Other buffer
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 SECTION "WRAM", WRAM0
-	wGridToggle: db	; Flips on and off between iterations to determine the cell buffer used
-	wTileQueueCursor: db 		; The low-byte of the address to write to next in 'wTileUpdateQueue"
-	wTileUpdateQueue: db		; VRAM update queue
+	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
+	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
 	DS 255				; A reasonable amount for now but we could run out
 
 
@@ -515,3 +605,5 @@ SECTION "Game State", WRAM0
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db
 	hSavedNeighboursBit7: db
+	hCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
+	hTileQueueCursor: db 		; The low-byte of the address to write to next in 'wTileUpdateQueue"
