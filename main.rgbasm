@@ -236,13 +236,15 @@ Main: ; The looping point for the game's main loop
 	cp STATE_ITERATING
 	jp nz, PlayerInput
 
-	; If inside the iterating state (falling out from checking if in PlayerState)
-	; Loop if we are waiting for the screen to update
-	; Todo : Go to some halt state here instead
+	; Check if waiting for a screen update, if so, halt
 	ldh a, [hCellTileMapUpdateReady]
 	cp 0
-	jp nz, Main
+	jp z, IteratingState
+	halt
+	jp Main
+	; Fall-through = Iterating state
 	; If we are allowed to iterate, choose which buffer to use now
+IteratingState:
 	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
 	cp 0
 	jp nz, .choose_buffer2	 ; If not zero, use "wCells2"
@@ -517,8 +519,6 @@ FinishIterating:
 	ld [wGridToggle], a
 	ld a, 1
 	ld [hCellTileMapUpdateReady], a		; Tell VBlank routine that it can now update tiles
-	; TODO: Set a variable in HRAM to communicate that there are tiles to process. The next iteration will wait for that to be off
-	; At this point, we need to let game draw a frame before we iterate again (maybe have a double buffer someday)
 	jp Main
 PlayerInput:
 	; Occurs if state is STATE_PLAYER
