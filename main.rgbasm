@@ -93,15 +93,19 @@ VBlankHandler:
 	jp z, .vblank_done
 	; This code runs only in real vblank period
 	ld a, LOW(wTileUpdateQueue)
-	ld e, a		; Current cursor end point
+	ld e, a		; The start of the queue. We want to reach this eventually
 	ld a, HIGH(wTileUpdateQueue)
-	ld b, a		; B is our stopping point (the start of the queue)
+	ld b, a		; BC will be used to get update addresses from the queue
 	ld a, [hTileQueueCursor]
-	ld c, a		; C is our current tile index, it must descend to reach B
-	dec c		; The cursor normally points to the cell about to be written to next, so it is off by one
-	; TODO : Make a different iterator than C == B because that could run for too many tiles
-	; Instead, from the C (cursor) and B (start of queue) values, calculate a number of cells that can be iterated
-	; If the distance between the two if more than 32, only do 32, otherwise, do them all
+	ld c, a		; C is our current tile index, starting at the last tile
+	dec c		; Cursor is off by one
+	sub e		; Get the difference between the end and start (update count)
+	rra
+	cp 32
+	jp c, .use_full_counter ; If under 64, use value as-is
+	ld a, 32 ; Elseway, cap value to 64
+.use_full_counter
+	ld e, a		; Put our iteration counter in e
 .cell_update_loop:
 	; Load the VRAM tile to update
 	ld a, [bc] ; Load the low VRAM byte
@@ -109,22 +113,25 @@ VBlankHandler:
 	dec c	; Decrease our cursor by 1
 	ld a, [bc] ; Load the high VRAM byte
 	ld h, a
-	ld a, [hl] ; Load the VRAM byte to flip
 	dec c	; Dec again before the next byte
+	ld a, [hl] ; Load the VRAM byte to flip
 	; Update the tile
-	cpl a			; Invert the VRAM bit
+	cpl a			; Invert the VRAM byte
 	and a, %00000001	; Keep only the first bit
 	ld [hl], a		; Save the change
 	; Loop management
-	ld a, c		; Load C in A for a test
-	cp e		; If the cursor reached the starting point, lets stop
-	jp nc, .cell_update_loop	; This loops if we arent done
+	dec e				; Dec our counter variable
+	jp nz, .cell_update_loop	; This loops if we arent done
 	; Finish up
-	; Turn the cell tilemap update flag off
+	; We need to save the cursor position for later, and see if we are fully done
+	ld a, c		; We want to store our cursor for later
+	inc a 	; To put it back to the next byte, since all the code accounts for that
+	ld [hTileQueueCursor], a ; Save the cursor status
+	cp LOW(wTileUpdateQueue) ; Is the cursor back to the start
+	jp nz, .vblank_done
+	; If the cursor is back to the start position, clear update byte
 	ld a, 0
 	ld [hCellTileMapUpdateReady], a
-	ld a, LOW(wTileUpdateQueue)
-	ld [hTileQueueCursor], a
 .vblank_done
 	; Pop the registers back
 	pop hl
@@ -525,6 +532,19 @@ PlayerInput:
 	nop ; nothing yet
 	jp Main
 
+; Cell update routine
+; todo
+; Example of setting cell "((1+CELL_ROW*4)*8)+2"
+; Aka, 4 row down, 10th cell (i think, verify)
+;	ld a, %00100000
+;	ld [wCells+(1+CELL_ROW*4)], a
+;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
+
+; Player cursor is a vram address essentially (which tile it's on)
+; So you need to go from that space down to the bitfield by doing /8
+; No input/output
+; Update to the cell visually must be put in a queue, so the vblank interrupt needs to work
+; in the player input state too. Gotta update that to have a reasonable limit.
 
 ; Useful routines
 UpdateKeys:
