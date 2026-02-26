@@ -208,20 +208,40 @@ clearCells:
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
 	; Todo : This needs to be a procedure that also sets the graphics
-	ld a, %11100000
-	ld [wCells+(1+CELL_ROW*4)], a
-	ld [wCells+(1+CELL_ROW*6)], a
-	ld a, %10100000
-	ld [wCells+(1+CELL_ROW*5)], a
-	ld a, 1
-	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+0], a
-	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+1], a
-	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
-	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+0], a
-	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+2], a
-	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+0], a
-	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+1], a
-	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+2], a
+	; 3 bits on row 4, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+2
+	call ToggleCellAtHL
+	; 2 bits on row 5, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+2 
+	call ToggleCellAtHL
+	; 3 bits on row 6, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
+	call ToggleCellAtHL
+
+;	ld a, %11100000
+;	ld [wCells+(1+CELL_ROW*4)], a
+;	ld [wCells+(1+CELL_ROW*6)], a
+;	ld a, %10100000
+;	ld [wCells+(1+CELL_ROW*5)], a
+;	ld a, 1
+;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+0], a
+;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+1], a
+;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
+;	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+0], a
+;	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+2], a
+;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+0], a
+;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+1], a
+;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+2], a
 	
 	; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
@@ -545,6 +565,79 @@ PlayerInput:
 ; No input/output
 ; Update to the cell visually must be put in a queue, so the vblank interrupt needs to work
 ; in the player input state too. Gotta update that to have a reasonable limit.
+
+; Assumes that the screen is off, if not, will do nothing
+; Instantly updates the cell at the given vblank address, and it's internal representation
+; Input 
+;	HL
+; Output
+;	NONE
+; Thrashes every registers lol
+ToggleCellAtHL:
+	; The code need to branch depending on the LCD state
+	ld a, [rLCDC]	; Loading the on/off state of the screen
+	cp 0
+	jp nz, .add_change_to_queue	; If rLCDC is not zero, the screen is on
+	; Do the changes immediately if the screen is off
+	ld a, [hl]	; Load the tile to update
+	cpl a			; Invert the VRAM byte
+	and a, %00000001	; Keep only the first bit
+	ld [hl], a		; Save the change
+	jp .bit_cell_changes
+.add_change_to_queue
+	; Adding the changes to the tile queue
+	; Set HL to a position in the tile queue
+	push hl
+	pop bc	; Move old HL into BC
+	ld h, HIGH(wTileUpdateQueue)
+	ld a, [hTileQueueCursor]
+	ld l, a 	; HL is now the next queue address to update
+	; Add the value BC to the queue
+	ld a, b
+	ld [hli], a
+	ld a, c
+	ld [hli], a
+	; Save the cursor position for the next iteration
+	ld a, l
+	ld [hTileQueueCursor], a
+	push bc
+	pop hl		; Move old HL back in HL
+.bit_cell_changes
+	; Update the tile
+	; Update the internal cell bit
+	; Keep the first 3 bit of the address
+	ld a, l
+	and a, %00000111
+	ld d, a		; This is actually our offset into the byte from 0-7. Yay.
+	; Remove the VRAM addressing part of the address
+	ld a, h
+	sub HIGH(_SCRN0)
+	ld h, a
+	; Gotta divide the address by 8...
+	; Reference : https://www.chilliant.com/z80shift.html
+	srl h
+	rr l
+	srl h
+	rr l
+	srl h
+	rr l
+	; Put it back in the cell ranges
+	ld a, h
+	add HIGH(wCells)
+	ld h, a
+	; Find bit D, inside of byte [HL]
+	ld a, [hl]	; We now have our cell byte
+	ld e, 1		; We are gonna shift that 1 bit around D times
+	inc d
+.loop
+	rl e		; Left shift gets us closer to setting the Dth bit
+	dec d
+	jp nz, .loop	; Loop when D reached zero, and E should be set
+	; Apply the change we made
+	xor a, e	; This toggle a bit in A
+	ld [hl], a	; We set the changes we made back
+.done
+	ret
 
 ; Useful routines
 UpdateKeys:
