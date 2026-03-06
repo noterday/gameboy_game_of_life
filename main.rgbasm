@@ -58,14 +58,19 @@ MACRO game_of_life_logic_inner
 .post_gol_check\@:
 ENDM
 
+; This code runs at the end of a byte being processed during a gol iteration
+; BD must be a valid address inside the _SCRN0 tilemap
+; HL must be the address of the next free slot in the "wTileUpdateQueue"
+; D must be a bitmask of all changes that happened in the "current byte"
 MACRO add_cell_updates_to_vram_queue 
-	bit \1, d	; We test the given bit from the byte D
-	jp z, .skip_vram_queue_update\@	; If D is off, we skip doing work
+	bit \1, d			; We check if the bit \1 is on
+	jp z, .skip_vram_queue_update\@	; If the bit was 0, then we do nothing
 	ld a, b
-	ld [hli], a
+	ld [hli], a		; Add the High half of the VRAM address to the tile queue and inc the queue cursor
 	ld a, c
-	ld [hli], a
-.skip_vram_queue_update\@:	; No matter what, increase BC (our VRAM index)
+	ld [hli], a		; Add the low half of the VRAM address to the tile queue and inc the queue cursor
+.skip_vram_queue_update\@:	
+	; Increase BC, the VRAM address we are using, regardless of whether a tile update was added or not
 	inc bc
 ENDM
 
@@ -107,13 +112,14 @@ VBlankHandler:
 .use_full_counter
 	ld e, a		; Put our iteration counter in e
 .cell_update_loop:
-	; Load the VRAM tile to update
+	; Load the next VRAM address to update from the queue position at BC into HL
 	ld a, [bc] ; Load the low VRAM byte
 	ld l, a
 	dec c	; Decrease our cursor by 1
 	ld a, [bc] ; Load the high VRAM byte
 	ld h, a
 	dec c	; Dec again before the next byte
+	; HL now points to the VRAM addr to update, and the queue cursor was decreased
 	ld a, [hl] ; Load the VRAM byte to flip
 	; Update the tile
 	cpl a			; Invert the VRAM byte
@@ -228,21 +234,10 @@ clearCells:
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
 	call ToggleCellAtHL
 
-;	ld a, %11100000
-;	ld [wCells+(1+CELL_ROW*4)], a
-;	ld [wCells+(1+CELL_ROW*6)], a
-;	ld a, %10100000
-;	ld [wCells+(1+CELL_ROW*5)], a
-;	ld a, 1
-;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+0], a
-;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+1], a
-;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
-;	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+0], a
-;	ld [_SCRN0 + ((1+CELL_ROW*5)*8)+2], a
-;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+0], a
-;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+1], a
-;	ld [_SCRN0 + ((1+CELL_ROW*6)*8)+2], a
-	
+	; Debug that draws 1 cell at the start of row 2
+;	ld hl, _SCRN0 + CELL_ROW*8
+;	call ToggleCellAtHL 
+
 	; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
 	ld [rLCDC], a
@@ -474,7 +469,10 @@ Bit6to1Check:
 
 ; Setup the next memory address in HL
 GetNextByte:
-; VRAM updates ( TEST )
+	; At this stage, changes for the current byte have already been written into it's mirror buffer
+	; We need to find what has changed by comparing both buffers (with a XOR),
+	; to find every graphical tile update we need to do.
+
 	; Compare the previous byte in both buffers to find changes
 	dec l 		; We need to look back at the old byte again for a bit
 	ld h, HIGH(wCells)
@@ -482,20 +480,22 @@ GetNextByte:
 	ld a, [hl]
 	res 7, l	; This gives us the byte in buffer two
 	xor a, [hl] 	; Here, A should only contain the "Changed" bits
-	ld d, a		; D is our list of bits to queue up for vram updates
+	ld d, a		; D is now a bit mask where 1 bit signifies that a change has happened
 
-	; Multiply HL by 8 to get into VRAM dimensions
-	; TODO : This whole section is actual nonsense and doesn't work at all...
+	; Multiply HL by 8 to get into VRAM address space
+	; This works because HL is aligned a certain way (don't know how to explain it...)
 	ld h, 0		; We want to multiply l only
 	add hl, hl
 	add hl, hl
 	add hl, hl
-	; Get HL to point into the VRAM area
+	; Get HL to point into the VRAM area that contains the _SCRN0 tilemap
 	ld b, HIGH(_SCRN0)
-	ld c, LOW(_SCRN0)
+	ld c, LOW(_SCRN0)	; For some reason everything is off by one so we do a -1 here (dont know why...)
 	add hl, bc
 	ld b, h
-	ld c, l		; BD is now a valid VRAM address, where our byte of cell starts
+	ld c, l		; BC is now a valid VRAM address, where our byte of cell starts
+	dec bc		; Everything seemed to be off by 1
+
 
 	; Set HL to a position in the tile queue
 	ld h, HIGH(wTileUpdateQueue)
@@ -503,15 +503,14 @@ GetNextByte:
 	ld l, a 	; HL is now the next queue address to update
 
 	; For updates in each bit
-	add_cell_updates_to_vram_queue 7
-	add_cell_updates_to_vram_queue 6
-	add_cell_updates_to_vram_queue 5
-	add_cell_updates_to_vram_queue 4
-	add_cell_updates_to_vram_queue 3
-	add_cell_updates_to_vram_queue 2
-	add_cell_updates_to_vram_queue 1
 	add_cell_updates_to_vram_queue 0
-
+	add_cell_updates_to_vram_queue 1
+	add_cell_updates_to_vram_queue 2
+	add_cell_updates_to_vram_queue 3
+	add_cell_updates_to_vram_queue 4
+	add_cell_updates_to_vram_queue 5
+	add_cell_updates_to_vram_queue 6
+	add_cell_updates_to_vram_queue 7
 	; Save the cursor position for the next iteration
 	ld a, l
 	ld [hTileQueueCursor], a
