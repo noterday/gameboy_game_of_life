@@ -87,55 +87,61 @@ VBlankInterrupt:
 ; The VBLANK interrupt
 SECTION "VBlank Handler", ROM0
 VBlankHandler:
-	; Put my code here
-	; The queue of tiles is a list of addresses in VRAM that must be flipped on or OFF
-	; Check if the bit in hram that tells you if you're allowed to update cells, if not jump to the end
-	; Load the current cursor variable hTileQueueCursor and iterate it backward until it equals the starting value
-	; meaning that hTileQueueCursor is == to wTileUpdateQueue. That's how you know you're done.
-	; For each tile along the way, read the value, load the vram byte and flip it.
-	ld a, [hCellTileMapUpdateReady]
+	; wTileUpdateQueue is a queue storing VRAM addresses that need to be flipped on the tilemap
+	; hTileQueueCursor keeps track of where inside this queue we are currently reading from
+	
+	; Check if the game is ready to process a cell grid update
+	ld a, [hCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
 	cp 0
-	jp z, .vblank_done
-	; This code runs only in real vblank period
+	jp z, .vblank_done			; If zero, we need to do nothing here
+	
+	; Get the start of the update queue for later
 	ld a, LOW(wTileUpdateQueue)
-	ld e, a		; The start of the queue. We want to reach this eventually
+	ld e, a					; E stores the start of the VRAM queue
+
+	; Making BC address the "next" queue element to read, AKA the queue cursor
 	ld a, HIGH(wTileUpdateQueue)
-	ld b, a		; BC will be used to get update addresses from the queue
-	ld a, [hTileQueueCursor]
-	ld c, a		; C is our current tile index, starting at the last tile
-	dec c		; Cursor is off by one
-	sub e		; Get the difference between the end and start (update count)
-	rra
-	cp 32
-	jp c, .use_full_counter ; If under 64, use value as-is
-	ld a, 32 ; Elseway, cap value to 64
+	ld b, a	
+	ld a, [hTileQueueCursor] 	; Get the queue cursor into A
+	ld c, a		; BC is our current tile index, starting at the last tile
+	dec c		; When coming from iterating, the cursor points to the byte after the end of the queue
+
+	; Calculate how many cell we should process this VBlank period
+	; The amount will be the minimum between our total cell update count and 32
+	sub e		; Get the number of bytes in the update queue (End of queue (A) minus Start of queue (E))
+	rra		; Divide the number by 2 to get the update count
+	cp 32		; Compare the number of updates with 32
+	jp c, .use_full_counter	; If smaller than 32, let's use the amount as-is
+	ld a, 32 		; Elseway, cap value to 64
 .use_full_counter
-	ld e, a		; Put our iteration counter in e
+	ld e, a			; E now stores how many updates we want to do this VBLANK
 .cell_update_loop:
-	; Load the next VRAM address to update from the queue position at BC into HL
+	; Load the next VRAM address from the queue into HL
 	ld a, [bc] ; Load the low VRAM byte
 	ld l, a
 	dec c	; Decrease our cursor by 1
 	ld a, [bc] ; Load the high VRAM byte
 	ld h, a
-	dec c	; Dec again before the next byte
-	; HL now points to the VRAM addr to update, and the queue cursor was decreased
-	ld a, [hl] ; Load the VRAM byte to flip
-	; Update the tile
-	cpl a			; Invert the VRAM byte
-	and a, %00000001	; Keep only the first bit
+	dec c	; Decrease our cursor by 1
+
+	; HL now points to the VRAM address to update
+	; Time to update the tile (flip it)
+	ld a, [hl] 		; Load the VRAM byte to flip
+	xor %00000001		; Flip the first bit 
 	ld [hl], a		; Save the change
+
 	; Loop management
 	dec e				; Dec our counter variable
-	jp nz, .cell_update_loop	; This loops if we arent done
+	jp nz, .cell_update_loop	; Loop until E == 0
+
 	; Finish up
 	; We need to save the cursor position for later, and see if we are fully done
-	ld a, c		; We want to store our cursor for later
-	inc a 	; To put it back to the next byte, since all the code accounts for that
-	ld [hTileQueueCursor], a ; Save the cursor status
-	cp LOW(wTileUpdateQueue) ; Is the cursor back to the start
+	ld a, c		; Put the cursor into A, so we can save it
+	inc a 		; Move the cursor up by 1 (to match the DEC at the start of vblank, see above)
+	ld [hTileQueueCursor], a ; Save the cursor
+	cp LOW(wTileUpdateQueue) ; Is the cursor back to the starting position?
 	jp nz, .vblank_done
-	; If the cursor is back to the start position, clear update byte
+	; If the cursor is back to the start position, clear the "update ready" status
 	ld a, 0
 	ld [hCellTileMapUpdateReady], a
 .vblank_done
@@ -213,7 +219,23 @@ clearCells:
 
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
-	; Todo : This needs to be a procedure that also sets the graphics
+	;ld hl, _SCRN0 + (1 * 32)
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (3 * 32) + 1
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (5 * 32) + 2
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (7 * 32) + 3
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (9 * 32) + 4
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (11 * 32) + 5
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (13 * 32) + 6
+	;call ToggleCellAtHL
+	;ld hl, _SCRN0 + (15 * 32) + 7
+	;call ToggleCellAtHL
+
 	; 3 bits on row 4, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+0
 	call ToggleCellAtHL
@@ -224,7 +246,7 @@ clearCells:
 	; 2 bits on row 5, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+0
 	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+2 
+	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+2
 	call ToggleCellAtHL
 	; 3 bits on row 6, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+0
@@ -490,11 +512,11 @@ GetNextByte:
 	add hl, hl
 	; Get HL to point into the VRAM area that contains the _SCRN0 tilemap
 	ld b, HIGH(_SCRN0)
-	ld c, LOW(_SCRN0)	; For some reason everything is off by one so we do a -1 here (dont know why...)
+	ld c, LOW(_SCRN0)	
 	add hl, bc
 	ld b, h
 	ld c, l		; BC is now a valid VRAM address, where our byte of cell starts
-	dec bc		; Everything seemed to be off by 1
+	;dec bc		; Everything seemed to be off by 1
 
 
 	; Set HL to a position in the tile queue
@@ -503,14 +525,14 @@ GetNextByte:
 	ld l, a 	; HL is now the next queue address to update
 
 	; For updates in each bit
-	add_cell_updates_to_vram_queue 0
-	add_cell_updates_to_vram_queue 1
-	add_cell_updates_to_vram_queue 2
-	add_cell_updates_to_vram_queue 3
-	add_cell_updates_to_vram_queue 4
-	add_cell_updates_to_vram_queue 5
-	add_cell_updates_to_vram_queue 6
 	add_cell_updates_to_vram_queue 7
+	add_cell_updates_to_vram_queue 6
+	add_cell_updates_to_vram_queue 5
+	add_cell_updates_to_vram_queue 4
+	add_cell_updates_to_vram_queue 3
+	add_cell_updates_to_vram_queue 2
+	add_cell_updates_to_vram_queue 1
+	add_cell_updates_to_vram_queue 0
 	; Save the cursor position for the next iteration
 	ld a, l
 	ld [hTileQueueCursor], a
@@ -607,7 +629,8 @@ ToggleCellAtHL:
 	; Keep the first 3 bit of the address
 	ld a, l
 	and a, %00000111
-	ld d, a		; This is actually our offset into the byte from 0-7. Yay.
+	ld d, a		; D represents which bit we update, with 0 being most significant
+
 	; Remove the VRAM addressing part of the address
 	ld a, h
 	sub HIGH(_SCRN0)
@@ -624,18 +647,19 @@ ToggleCellAtHL:
 	ld a, h
 	add HIGH(wCells)
 	ld h, a
+
 	; Find bit D, inside of byte [HL]
 	ld a, [hl]	; We now have our cell byte
-	ld e, 1		; We are gonna shift that 1 bit around D times
-	inc d
-.loop
-	rl e		; Left shift gets us closer to setting the Dth bit
-	dec d
-	jp nz, .loop	; Loop when D reached zero, and E should be set
-	; Apply the change we made
+	ld e, %10000000 ; E is our bit update mask, it starts left and will move right
+	inc d		; Needed to dec it as part of a loop
+.loop_start
+	dec d		; We decrease D (which bit we are working on
+	jp z, .loop_end ; If D is at 0, we have moved enough
+	rr e		; If D isn't 0, then bitshift E to the right
+	jp .loop_start	; Loop to check if we are done again
+.loop_end
 	xor a, e	; This toggle a bit in A
 	ld [hl], a	; We set the changes we made back
-.done
 	ret
 
 ; Useful routines
@@ -701,10 +725,12 @@ SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to wo
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 	wCells2: db	; Other buffer
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
+
+SECTION "VRAMTileQueue", WRAM0, ALIGN[2]
+	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
+	DS 255 ; A reasonable amount for now but we could run out
 SECTION "WRAM", WRAM0
 	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
-	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
-	DS 255				; A reasonable amount for now but we could run out
 
 
 SECTION "Input Variables", WRAM0
