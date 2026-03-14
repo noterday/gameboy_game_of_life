@@ -1,7 +1,6 @@
 INCLUDE "hardware.inc"
 
 DEF WORD_SIZE EQU 65535
-
 DEF CELL_TOTAL EQU 128 
 DEF DOUBLE_CELL_TOTAL EQU 256
 DEF CELL_ROW EQU 4   ; 4 bytes
@@ -101,9 +100,12 @@ VBlankHandler:
 
 	; Making BC address the "next" queue element to read, AKA the queue cursor
 	ld a, HIGH(wTileUpdateQueue)
-	ld b, a	
+	ld b, a		; BC is our current tile index, starting at the last tile
+	; Load cursor into C and check if we can skip work
 	ld a, [hTileQueueCursor] 	; Get the queue cursor into A
-	ld c, a		; BC is our current tile index, starting at the last tile
+	cp 0
+	jp z, .vblank_done		; If tile queue is at 0, skip doing work
+	ld c, a				; Load the low half of BC
 	dec c		; When coming from iterating, the cursor points to the byte after the end of the queue
 
 	; Calculate how many cell we should process this VBlank period
@@ -219,22 +221,22 @@ clearCells:
 
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
-	;ld hl, _SCRN0 + (1 * 32)
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (3 * 32) + 1
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (5 * 32) + 2
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (7 * 32) + 3
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (9 * 32) + 4
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (11 * 32) + 5
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (13 * 32) + 6
-	;call ToggleCellAtHL
-	;ld hl, _SCRN0 + (15 * 32) + 7
-	;call ToggleCellAtHL
+	ld hl, _SCRN0 + (1 * 32)
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (3 * 32) + 1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (5 * 32) + 2
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (7 * 32) + 3
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (9 * 32) + 4
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (11 * 32) + 5
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (13 * 32) + 6
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (15 * 32) + 7
+	call ToggleCellAtHL
 
 	; 3 bits on row 4, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+0
@@ -255,10 +257,6 @@ clearCells:
 	call ToggleCellAtHL
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
 	call ToggleCellAtHL
-
-	; Debug that draws 1 cell at the start of row 2
-;	ld hl, _SCRN0 + CELL_ROW*8
-;	call ToggleCellAtHL 
 
 	; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
