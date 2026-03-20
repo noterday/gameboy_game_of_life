@@ -7,7 +7,10 @@ DEF CELL_ROW EQU 4   ; 4 bytes
 DEF DOUBLE_CELL_ROW EQU 8 ; 8 bytes
 ; Game states
 DEF STATE_ITERATING EQU 0
-DEF STATE_PLAYER EQU 1
+DEF STATE_PLAYER_INPUT EQU 1
+
+; Constants
+DEF SCROLLING_SPEED = 3
 
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
@@ -86,11 +89,14 @@ VBlankInterrupt:
 ; The VBLANK interrupt
 SECTION "VBlank Handler", ROM0
 VBlankHandler:
+	; Update keys first
+	call UpdateKeys		; Get the player input
+
 	; wTileUpdateQueue is a queue storing VRAM addresses that need to be flipped on the tilemap
 	; hTileQueueCursor keeps track of where inside this queue we are currently reading from
 	
 	; Check if the game is ready to process a cell grid update
-	ld a, [hCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
+	ld a, [wCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
 	cp 0
 	jp z, .vblank_done			; If zero, we need to do nothing here
 	
@@ -145,7 +151,7 @@ VBlankHandler:
 	jp nz, .vblank_done
 	; If the cursor is back to the start position, clear the "update ready" status
 	ld a, 0
-	ld [hCellTileMapUpdateReady], a
+	ld [wCellTileMapUpdateReady], a
 .vblank_done
 	; Pop the registers back
 	pop hl
@@ -203,7 +209,7 @@ ClearOam:
 	ld [wNewKeys], a
 	ld [wState], a
 	ld [wGridToggle], a
-	ld [hCellTileMapUpdateReady], a
+	ld [wCellTileMapUpdateReady], a
 	; Queue variables
 	ld a, LOW(wTileUpdateQueue)
 	ld [hTileQueueCursor], a
@@ -276,17 +282,25 @@ Main: ; The looping point for the game's main loop
 	; Check if the current state is STATE_ITERATING
 	ld a, [wState]
 	cp STATE_ITERATING
-	jp nz, PlayerInput
-
-	; Check if waiting for a screen update, if so, halt
-	ldh a, [hCellTileMapUpdateReady]
-	cp 0
 	jp z, IteratingState
+	cp STATE_PLAYER_INPUT
+	jp z, PlayerInputState 
+
+	; Do nothing if somehow not in any state (shouldn't happen)
 	halt
 	jp Main
-	; Fall-through = Iterating state
-	; If we are allowed to iterate, choose which buffer to use now
+
+; Game state for the game of life iterations
+; This will process a full iteration of the cell grid before taking inputs
 IteratingState:
+	; Check if waiting for a screen update, if so, halt
+	ld a, [wCellTileMapUpdateReady]
+	cp 0
+	jp z, .done_waiting
+	halt	; Wait and do nothing
+	jp IteratingState
+.done_waiting
+	; Choose a buffer to iterate
 	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
 	cp 0
 	jp nz, .choose_buffer2	 ; If not zero, use "wCells2"
@@ -295,7 +309,8 @@ IteratingState:
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW ; Using wCells2
 .chose_buffer
-; Start of the iteration process
+
+; Start of the iteration loop
 ; We jump here each time the GoL rule check hits a new row of bytes
 IterateNewRow:
 	ld a, 0
@@ -560,24 +575,98 @@ GetNextByte:
 	jp z, IterateNewRow	; Jump to the new row code, which clears the b,d,e registers
 	jp SetupNewIteratedByte	; Iterate over the next byte if we didn't exit and didn't jump to a new row
 FinishIterating:
+	; Process player inputs
+	; Check for camera scrolling
+	ld a, [rSCX]	
+	ld b, a			; Camera X in B register
+	ld a, [rSCY]
+	ld c, a			; Camera Y in C register
+	ld a, [wCurKeys]	; Current keys in A
+	ld d, a			; Saving the current keys in D register
+
+	; Check down
+	and a, %10000000	; Check if the player pressed Down
+	jp z, .done_checking_down
+	; Scroll down
+	ld a, c
+	cp 142
+	jp nc, .done_checking_down	; Skip scrolling if you hit the down limit
+	add SCROLLING_SPEED
+	ld [rSCY], a
+.done_checking_down
+	; Check up
+	ld a, d			; Recover inputs
+	and a, %01000000	; Check if the player pressed Up
+	jp z, .done_checking_up
+	; Scroll down
+	ld a, c
+	cp SCROLLING_SPEED
+	jp c, .done_checking_up 	; Skip scrolling if you hit the up limit
+	sub SCROLLING_SPEED
+	ld [rSCY], a
+.done_checking_up; Check if the player inputs called to interrupt the iteration
+	; Check left
+	ld a, d			; Recover inputs
+	and a, %00100000	; Check if the player pressed Left
+	jp z, .done_checking_left
+	; Scroll left
+	ld a, b
+	cp SCROLLING_SPEED
+	jp c, .done_checking_left	; Skip scrolling if you hit the left limit
+	sub SCROLLING_SPEED
+	ld [rSCX], a
+.done_checking_left
+	ld a, d			; Recover inputs
+	and a, %00010000	; Check if the player pressed Up
+	jp z, .done_checking_right
+	; Scroll right
+	ld a, b
+	cp 159
+	jp nc, .done_checking_right	; Skip scrolling if you hit the right limit
+	add SCROLLING_SPEED
+	ld [rSCX], a
+.done_checking_right
+	; Check for buttons
+	ld a, d			; Recover inputs
+	and a, %00000111 ; If player pressed A, B or Select
+	cp 0
+	jp z, .done_checking_end_iteration_inputs
+	ld a, STATE_PLAYER_INPUT
+	ld [wState], a
+.done_checking_end_iteration_inputs
+	; End of iteration processing
+	; Swap which buffer is written to
 	ld a, [wGridToggle]
-	cpl a			; Flip wGridToggle to iterate the other buffer now
+	cpl a					; Flip wGridToggle to iterate the other buffer now
 	ld [wGridToggle], a
+
+	; Tell the VBlank interrupt that a screen update is needed
 	ld a, 1
-	ld [hCellTileMapUpdateReady], a		; Tell VBlank routine that it can now update tiles
-	jp Main
-PlayerInput:
-	; Occurs if state is STATE_PLAYER
+	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
+
+	; Return to the start
+	jp Main					
+
+
+; Start if state is STATE_PLAYER_INPUT
+PlayerInputState:
 	nop ; nothing yet
+	
+	; If player presses "start", return to iteration
+	ld a, [wNewKeys]	; Get the "just pressed" inputs
+	ld c, a			; Load just pressed inputs into C to save them close by
+	and a, %00001000		; Check for "Start" first
+	jp z, .done_w_start		; If start is not pressed, skip start processing
+	ld a, STATE_ITERATING 
+	ld [wState], a			; Return to the iteration state
+	jp .done_input_processing	; Don't check any other input if returning to iteration
+
+.done_w_start
+	; Do other buttons
+
+.done_input_processing
 	jp Main
 
-; Cell update routine
-; todo
-; Example of setting cell "((1+CELL_ROW*4)*8)+2"
-; Aka, 4 row down, 10th cell (i think, verify)
-;	ld a, %00100000
-;	ld [wCells+(1+CELL_ROW*4)], a
-;	ld [_SCRN0 + ((1+CELL_ROW*4)*8)+2], a
 
 ; Player cursor is a vram address essentially (which tile it's on)
 ; So you need to go from that space down to the bitfield by doing /8
@@ -660,7 +749,12 @@ ToggleCellAtHL:
 	ld [hl], a	; We set the changes we made back
 	ret
 
+
 ; Useful routines
+; Update player inputs
+; Sets 'wNewKeys' to keys just pressed the current frame
+; Sets 'wCurKeys' to keys currently being held
+; Only uses the A and B registers
 UpdateKeys:
 	; poll controller buttons
 	ld a, P1F_GET_BTN
@@ -687,6 +781,7 @@ UpdateKeys:
 	ld [wNewKeys], a
 	ld a, b
 	ld [wCurKeys], a
+	; Key press history that remembers between frames
 	ret
 .onenibble ; load nibble into a
 	ldh [rP1], a ; switch the key matrix. why hram?
@@ -729,11 +824,12 @@ SECTION "VRAMTileQueue", WRAM0, ALIGN[2]
 	DS 255 ; A reasonable amount for now but we could run out
 SECTION "WRAM", WRAM0
 	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
+	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
 
 
 SECTION "Input Variables", WRAM0
-	wCurKeys: db
-	wNewKeys: db
+	wCurKeys: db	; Keys that are pressed
+	wNewKeys: db	; Keys that are "just pressed", this current frame
 
 SECTION "Game State", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
@@ -741,5 +837,4 @@ SECTION "Game State", WRAM0
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db
 	hSavedNeighboursBit7: db
-	hCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
-	hTileQueueCursor: db 		; The low-byte of the address to write to next in 'wTileUpdateQueue"
+	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
