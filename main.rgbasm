@@ -12,6 +12,16 @@ DEF STATE_PLAYER_INPUT EQU 1
 ; Constants
 DEF SCROLLING_SPEED = 3
 
+; Inputs
+DEF INPUT_UP =		%10000000
+DEF INPUT_DOWN =	%01000000
+DEF INPUT_LEFT =	%00100000
+DEF INPUT_RIGHT =	%00010000
+DEF INPUT_START =	%00001000
+DEF INPUT_SELECT =	%00000100
+DEF INPUT_B =		%00000010
+DEF INPUT_A =		%00000001
+
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
@@ -92,9 +102,20 @@ VBlankHandler:
 	; Update keys first
 	call UpdateKeys		; Get the player input
 
+	; Update OAM
+	ld a, [wOamUpdateReady]
+	cp 0
+	nop ;TODO : OAM Update queue here
+	nop
+	nop
+	nop
+	nop
+	jp z, .tilemap_update
+
+.tilemap_update
+	; Do the tilemap VBLANK queue
 	; wTileUpdateQueue is a queue storing VRAM addresses that need to be flipped on the tilemap
 	; hTileQueueCursor keeps track of where inside this queue we are currently reading from
-	
 	; Check if the game is ready to process a cell grid update
 	ld a, [wCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
 	cp 0
@@ -175,19 +196,19 @@ WaitFirstVBlank:
 	ld a, 0
 	ld [rLCDC], a
 
+; Copy tiles in object section
+	ld de, Tiles            ; source in ROM
+	ld hl, _VRAM8000        ; dest in VRAM
+	ld bc, TilesEnd - Tiles ; # of bytes (pixel data) remaining
+	call Memcopy
+
 ; Copy BG tile data into VRAM
 	ld de, Tiles            ; source in ROM
 	ld hl, _VRAM9000        ; dest in VRAM
 	ld bc, TilesEnd - Tiles ; # of bytes (pixel data) remaining
 	call Memcopy
 
-; Copy BG tilemap into VRAM
-	;ld de, Tilemap              ; source in ROM
-	;ld hl, _SCRN0               ; dest in VRAM
-	;ld bc, TilemapEnd - Tilemap ; # of bytes (tile indices) remaining
-	;call Memcopy
-; The following is a tile writing test
-
+; Clearing OAM
 	ld a, 0        ; value to write to bytes
 	ld b, 160      ; # of bytes to write
 	ld hl, _OAMRAM ; dest
@@ -195,6 +216,18 @@ ClearOam:
 	ld [hli], a
 	dec b
 	jp nz, ClearOam
+; Write objects
+	ld hl, oPlayerCursorX
+	; Cursor
+	ld a, 16 ; X
+	ld [hli], a
+	ld a, 32 ; Y
+	ld [hli], a
+	ld a, 2	; ID
+	ld [hli], a
+	ld a, 0 ; Attributes
+	ld [hli], a
+
 
 ; init palette display registers
 	ld a, %11100100
@@ -210,9 +243,14 @@ ClearOam:
 	ld [wState], a
 	ld [wGridToggle], a
 	ld [wCellTileMapUpdateReady], a
-	; Queue variables
+	ld a, 1
+	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
+	; VRAM Queue cursor
 	ld a, LOW(wTileUpdateQueue)
 	ld [hTileQueueCursor], a
+	; VRAM OAM Queue cursor
+	ld a, LOW(wOamUpdateQueue)
+	ld [hOamQueueCursor], a
 
 ; Zero out the cells
 	ld b, 0
@@ -227,23 +265,6 @@ clearCells:
 
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
-	ld hl, _SCRN0 + (1 * 32)
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (3 * 32) + 1
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (5 * 32) + 2
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (7 * 32) + 3
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (9 * 32) + 4
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (11 * 32) + 5
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (13 * 32) + 6
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + (15 * 32) + 7
-	call ToggleCellAtHL
-
 	; 3 bits on row 4, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+0
 	call ToggleCellAtHL
@@ -264,7 +285,7 @@ clearCells:
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
 	call ToggleCellAtHL
 
-	; turn the LCD on
+; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
 	ld [rLCDC], a
 
@@ -585,7 +606,7 @@ FinishIterating:
 	ld d, a			; Saving the current keys in D register
 
 	; Check down
-	and a, %10000000	; Check if the player pressed Down
+	and a, INPUT_DOWN
 	jp z, .done_checking_down
 	; Scroll down
 	ld a, c
@@ -596,7 +617,7 @@ FinishIterating:
 .done_checking_down
 	; Check up
 	ld a, d			; Recover inputs
-	and a, %01000000	; Check if the player pressed Up
+	and a, INPUT_UP
 	jp z, .done_checking_up
 	; Scroll down
 	ld a, c
@@ -607,17 +628,14 @@ FinishIterating:
 .done_checking_up; Check if the player inputs called to interrupt the iteration
 	; Check left
 	ld a, d			; Recover inputs
-	and a, %00100000	; Check if the player pressed Left
-	jp z, .done_checking_left
-	; Scroll left
-	ld a, b
+	and a, INPUT_LEFT
 	cp SCROLLING_SPEED
 	jp c, .done_checking_left	; Skip scrolling if you hit the left limit
 	sub SCROLLING_SPEED
 	ld [rSCX], a
 .done_checking_left
 	ld a, d			; Recover inputs
-	and a, %00010000	; Check if the player pressed Up
+	and a, INPUT_RIGHT
 	jp z, .done_checking_right
 	; Scroll right
 	ld a, b
@@ -628,11 +646,14 @@ FinishIterating:
 .done_checking_right
 	; Check for buttons
 	ld a, d			; Recover inputs
-	and a, %00000111 ; If player pressed A, B or Select
+	and a, INPUT_SELECT | INPUT_A | INPUT_B ; If player pressed A, B or Select
 	cp 0
 	jp z, .done_checking_end_iteration_inputs
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
+	ld a, 0
+	ld [wNewKeys], a
+	ld [wCurKeys], a
 .done_checking_end_iteration_inputs
 	; End of iteration processing
 	; Swap which buffer is written to
@@ -650,21 +671,77 @@ FinishIterating:
 
 ; Start if state is STATE_PLAYER_INPUT
 PlayerInputState:
-	nop ; nothing yet
-	
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld c, a			; Load just pressed inputs into C to save them close by
-	and a, %00001000		; Check for "Start" first
+	and a, INPUT_START	; Check for "Start" first
 	jp z, .done_w_start		; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
 	jp .done_input_processing	; Don't check any other input if returning to iteration
-
 .done_w_start
-	; Do other buttons
+	; For the dpad input, we want a way to tell if changes were done
+	; We're gonna use B as a bool to know this
+	ld a, 0
+	ld b, a
 
+; wOamUpdateId : ID to write
+; wOamUpdateAttr : Attr to write
+	; Down
+	ld a, c
+	and a, INPUT_DOWN
+	jp z, .do_up
+	ld a, [oPlayerCursorY]
+	add 16
+	ld e, a		; Prepare to queue the Y change
+	inc b
+.do_up
+	; Up
+	ld a, c
+	and a, INPUT_UP
+	jp z, .do_left
+	ld a, [oPlayerCursorY]
+	sub 16
+	ld e, a		; Prepare to queue the Y change
+	inc b
+.do_left
+	; Left
+	ld a, c
+	and a, INPUT_LEFT
+	jp z, .do_right
+	ld a, [oPlayerCursorX]
+	sub 16
+	ld d, a
+	inc b
+.do_right
+	; Right
+	ld a, c
+	and a, INPUT_RIGHT
+	jp z, .do_cursor_queue
+	ld a, [oPlayerCursorX]
+	add 16
+	ld d, a
+	inc b
+.do_cursor_queue
+	ld a, b
+	cp 0
+	jp z, .done_w_directions
+	; The update
+	push bc
+	ld a, HIGH(oPlayerCursorX)
+	ld b, a
+	ld a, LOW(oPlayerCursorY)
+	ld c, a
+	ld a, [oPlayerCursorId]
+	ld [wOamUpdateId], a
+	ld a, [oPlayerCursorAttr]
+	ld [wOamUpdateAttr], a
+	call QueueOamUpdate
+	pop bc
+.done_w_directions
+	; ... buttons ...
 .done_input_processing
+	halt	; Wait till end of frame
 	jp Main
 
 
@@ -748,7 +825,42 @@ ToggleCellAtHL:
 	xor a, e	; This toggle a bit in A
 	ld [hl], a	; We set the changes we made back
 	ret
-
+	
+; OAM queue update
+; TODO : This won't do because we need the address of the object too!!!!
+; Instead, this should be a set of ram value we write to that then gets commited to queue
+; BC	: The address to write to
+; DE	; The XY values to write
+; wOamUpdateId : ID to write
+; wOamUpdateAttr : Attr to write
+QueueOamUpdate:
+	; Disable OAM vblank update so we dont break things
+	ld a, 0
+	ld [wOamUpdateReady], a
+	; Load the next address to write to
+	ld h, HIGH(wOamUpdateQueue)
+	ld a, [hOamQueueCursor]
+	ld l, a
+	; Write the address
+	ld a, b
+	ld [hli], a ; Address high
+	ld a, c
+	ld [hli], a ; Address low
+	ld a, d
+	ld [hli], a ; Write X
+	ld a, e
+	ld [hli], a ; Write Y
+	ld a, [wOamUpdateId]
+	ld [hli], a ; Write ID
+	ld a, [wOamUpdateAttr]
+	ld [hli], a ; Write Attr
+	; Save the new queue cursor position
+	ld a, l
+	ld [hOamQueueCursor], a
+	; Turn updates back on
+	ld a, 1
+	ld [wOamUpdateReady], a
+	ret
 
 ; Useful routines
 ; Update player inputs
@@ -822,10 +934,16 @@ SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to wo
 SECTION "VRAMTileQueue", WRAM0, ALIGN[2]
 	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
 	DS 255 ; A reasonable amount for now but we could run out
+	wOamUpdateQueue: db		; OAM update queue
+	DS 251 ; Multiple of 6?
+
 SECTION "WRAM", WRAM0
 	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
 	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
-
+	wOamUpdateReady: db	; 0 : Don't update object in vblank, 1: Do update objects
+	; These will be used to prep changes to OAM that will be queued
+	wOamUpdateId:	db		; Id
+	wOamUpdateAttr:	db		; Attr
 
 SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
@@ -834,7 +952,15 @@ SECTION "Input Variables", WRAM0
 SECTION "Game State", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
 
+SECTION "OAM", OAM
+	; Player cursor values
+	oPlayerCursorX: db
+	oPlayerCursorY: db
+	oPlayerCursorId: db
+	oPlayerCursorAttr: db
+
 SECTION "High Ram", HRAM
-	hSavedNeighboursBit0: db
-	hSavedNeighboursBit7: db
+	hSavedNeighboursBit0: db	; Used in the game iteration routine between each byte
+	hSavedNeighboursBit7: db	; IDEM
 	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
+	hOamQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
