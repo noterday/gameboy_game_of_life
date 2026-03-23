@@ -13,8 +13,8 @@ DEF STATE_PLAYER_INPUT EQU 1
 DEF SCROLLING_SPEED = 3
 
 ; Inputs
-DEF INPUT_UP =		%10000000
-DEF INPUT_DOWN =	%01000000
+DEF INPUT_DOWN =	%10000000
+DEF INPUT_UP =		%01000000
 DEF INPUT_LEFT =	%00100000
 DEF INPUT_RIGHT =	%00010000
 DEF INPUT_START =	%00001000
@@ -103,14 +103,40 @@ VBlankHandler:
 	call UpdateKeys		; Get the player input
 
 	; Update OAM
+	; Is Oam ready to be updated?
 	ld a, [wOamUpdateReady]
 	cp 0
-	nop ;TODO : OAM Update queue here
-	nop
-	nop
-	nop
-	nop
 	jp z, .tilemap_update
+	nop
+	; Get the start of the update queue for later
+	ld a, LOW(wOamUpdateQueue)
+	ld e, a					; E stores the start of the VRAM queue
+	ld b, HIGH(wOamUpdateQueue)
+	; Load the cursor into C and check if we can skip work
+	ld a, [hOamQueueCursor]
+	cp 0
+	jp z, .tilemap_update
+	ld c, a
+	dec c	; The cursor points to the next item to write to, but we want the last item written
+	; Load the value for H which will be static since OAM is 160 bytes long
+	ld h, HIGH(_OAMRAM)
+.oam_cell_update_loop:
+	; Load the next VRAM address from the queue into HL
+	ld a, [bc]	; Load the low VRAM byte
+	ld l, a
+	dec c		; Decrease our cursor by 1
+	jp z, .oam_cell_update_loop_done	; The OAM update queue is alligned, so if the cursor reaches 0, we are done looping
+	ld a, [bc]	; Load the value we need to write to OAM
+	ld [hl], a	; Write the change to OAM
+	dec c		; Decrease our cursor again
+	jp nz, .oam_cell_update_loop	; The OAM update queue is alligned, so if the cursor reaches 0, we are done
+.oam_cell_update_loop_done
+	; Because of the way we exit, we wouldn't have done the last change
+	ld a, [bc]	; Load the value we need to write to OAM
+	ld [hl], a	; Write the change to OAM
+	; Now that it's done, we cleanup by saving the cursor back to 0
+	ld a, LOW(wOamUpdateQueue)	; Should always be 0 but yknow
+	ld [hOamQueueCursor], a		; Write the 0 in the cursor position
 
 .tilemap_update
 	; Do the tilemap VBLANK queue
@@ -126,8 +152,7 @@ VBlankHandler:
 	ld e, a					; E stores the start of the VRAM queue
 
 	; Making BC address the "next" queue element to read, AKA the queue cursor
-	ld a, HIGH(wTileUpdateQueue)
-	ld b, a		; BC is our current tile index, starting at the last tile
+	ld b, HIGH(wTileUpdateQueue)
 	; Load cursor into C and check if we can skip work
 	ld a, [hTileQueueCursor] 	; Get the queue cursor into A
 	cp 0
@@ -217,7 +242,7 @@ ClearOam:
 	dec b
 	jp nz, ClearOam
 ; Write objects
-	ld hl, oPlayerCursorX
+	ld hl, oPlayerCursorY
 	; Cursor
 	ld a, 16 ; X
 	ld [hli], a
@@ -685,23 +710,28 @@ PlayerInputState:
 	ld a, 0
 	ld b, a
 
-; wOamUpdateId : ID to write
-; wOamUpdateAttr : Attr to write
-	; Down
-	ld a, c
-	and a, INPUT_DOWN
-	jp z, .do_up
+	; For each direction input, we will store XY values in DE
+	; And keep track of whether changes were made in B
+	ld a, [oPlayerCursorX]
+	ld d, a
 	ld a, [oPlayerCursorY]
-	add 16
-	ld e, a		; Prepare to queue the Y change
-	inc b
+	ld e, a
+
+	; Down
+	ld a, c			; Recover the new keys
+	and a, INPUT_DOWN	; Filter the down key
+	jp z, .do_up		; If down was pressed, continue
+	ld a, e			; Load the player cursor Y value
+	add 8			; Bring it down by 1 tile
+	ld e, a			; New Y value in E
+	inc b			; We flag that a change was made
 .do_up
 	; Up
 	ld a, c
 	and a, INPUT_UP
 	jp z, .do_left
-	ld a, [oPlayerCursorY]
-	sub 16
+	ld a, e
+	sub 8
 	ld e, a		; Prepare to queue the Y change
 	inc b
 .do_left
@@ -709,8 +739,8 @@ PlayerInputState:
 	ld a, c
 	and a, INPUT_LEFT
 	jp z, .do_right
-	ld a, [oPlayerCursorX]
-	sub 16
+	ld a, d
+	sub 8
 	ld d, a
 	inc b
 .do_right
@@ -718,26 +748,23 @@ PlayerInputState:
 	ld a, c
 	and a, INPUT_RIGHT
 	jp z, .do_cursor_queue
-	ld a, [oPlayerCursorX]
-	add 16
+	ld a, d
+	add 8
 	ld d, a
 	inc b
 .do_cursor_queue
+	; Check if any change was flagged in B reg
 	ld a, b
 	cp 0
 	jp z, .done_w_directions
-	; The update
-	push bc
-	ld a, HIGH(oPlayerCursorX)
-	ld b, a
-	ld a, LOW(oPlayerCursorY)
-	ld c, a
-	ld a, [oPlayerCursorId]
-	ld [wOamUpdateId], a
-	ld a, [oPlayerCursorAttr]
-	ld [wOamUpdateAttr], a
-	call QueueOamUpdate
-	pop bc
+
+	; Preparing the procedure calls
+	ld b, LOW(oPlayerCursorX)	; Load the address of Cursor X
+	ld c, d				; Load the new value of Cursor X
+	call QueueOamUpdate		; Call the OAM queue procedure
+	ld b, LOW(oPlayerCursorY)	; Same thing for Y here
+	ld c, e				; ...
+	call QueueOamUpdate		; ...
 .done_w_directions
 	; ... buttons ...
 .done_input_processing
@@ -826,40 +853,35 @@ ToggleCellAtHL:
 	ld [hl], a	; We set the changes we made back
 	ret
 	
-; OAM queue update
-; TODO : This won't do because we need the address of the object too!!!!
-; Instead, this should be a set of ram value we write to that then gets commited to queue
-; BC	: The address to write to
-; DE	; The XY values to write
-; wOamUpdateId : ID to write
-; wOamUpdateAttr : Attr to write
+; Queues an OAM update for the next VBLANK period
+; B	: The OAM address low part
+; C	: The value to write down
 QueueOamUpdate:
-	; Disable OAM vblank update so we dont break things
+	; Disable OAM vblank update so we dont break things if it happens mid function
 	ld a, 0
 	ld [wOamUpdateReady], a
-	; Load the next address to write to
+
+	; Load the next address to write to in the queue
 	ld h, HIGH(wOamUpdateQueue)
 	ld a, [hOamQueueCursor]
 	ld l, a
-	; Write the address
-	ld a, b
-	ld [hli], a ; Address high
+
+	; Write the item to queue
+	; We write the value first
 	ld a, c
-	ld [hli], a ; Address low
-	ld a, d
-	ld [hli], a ; Write X
-	ld a, e
-	ld [hli], a ; Write Y
-	ld a, [wOamUpdateId]
-	ld [hli], a ; Write ID
-	ld a, [wOamUpdateAttr]
-	ld [hli], a ; Write Attr
+	ld [hli], a ; The value we want to queue gets queued
+	; Then we were the address
+	ld a, b
+	ld [hli], a ; The low address we want to update gets added to the queue
+
 	; Save the new queue cursor position
 	ld a, l
 	ld [hOamQueueCursor], a
+
 	; Turn updates back on
 	ld a, 1
 	ld [wOamUpdateReady], a
+	; Leave
 	ret
 
 ; Useful routines
@@ -933,17 +955,15 @@ SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to wo
 
 SECTION "VRAMTileQueue", WRAM0, ALIGN[2]
 	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
-	DS 255 ; A reasonable amount for now but we could run out
-	wOamUpdateQueue: db		; OAM update queue
-	DS 251 ; Multiple of 6?
+	DS 255 				; We might need a lot of updates to be queued quickly for some GoL configurations
+	; (Note : This is also guaranteed to be alligned to XX00 since we just used 256 bytes in an alligned section
+	wOamUpdateQueue: db		; OAM update queue 
+	DS 127				; Reasonable limit?
 
 SECTION "WRAM", WRAM0
 	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
 	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
 	wOamUpdateReady: db	; 0 : Don't update object in vblank, 1: Do update objects
-	; These will be used to prep changes to OAM that will be queued
-	wOamUpdateId:	db		; Id
-	wOamUpdateAttr:	db		; Attr
 
 SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
@@ -954,8 +974,8 @@ SECTION "Game State", WRAM0
 
 SECTION "OAM", OAM
 	; Player cursor values
-	oPlayerCursorX: db
 	oPlayerCursorY: db
+	oPlayerCursorX: db
 	oPlayerCursorId: db
 	oPlayerCursorAttr: db
 
