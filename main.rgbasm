@@ -248,13 +248,13 @@ ClearOam:
 	dec b
 	jp nz, ClearOam
 ; Write objects
-	ld hl, oPlayerCursorY
 	; Cursor
-	ld a, 16 ; X
+	ld hl, oPlayerCursorY
+	ld a, 16 ; Y
 	ld [hli], a
-	ld a, 32 ; Y
+	ld a, 8 ; X
 	ld [hli], a
-	ld a, 2	; ID
+	ld a, 0	; ID
 	ld [hli], a
 	ld a, 0 ; Attributes
 	ld [hli], a
@@ -276,6 +276,8 @@ ClearOam:
 	ld [wCellTileMapUpdateReady], a
 	ld [wScrollX], a
 	ld [wScrollY], a
+	ld [wPlayerCursorGridX], a
+	ld [wPlayerCursorGridY], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	; VRAM Queue cursor
@@ -684,11 +686,16 @@ FinishIterating:
 	and a, INPUT_SELECT | INPUT_A | INPUT_B ; If player pressed A, B or Select
 	cp 0
 	jp z, .done_checking_end_iteration_inputs
+	; Go into player input state
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
 	ld a, 0
 	ld [wNewKeys], a
 	ld [wCurKeys], a
+	; Show the player cursor
+	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
+	ld c, 2
+	call QueueOamUpdate
 .done_checking_end_iteration_inputs
 	; End of iteration processing
 	; Swap which buffer is written to
@@ -710,57 +717,59 @@ PlayerInputState:
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld c, a			; Load just pressed inputs into C to save them close by
 	and a, INPUT_START	; Check for "Start" first
-	jp z, .done_w_start		; If start is not pressed, skip start processing
+	jp z, .check_directions ; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
+	; Hide the player cursor
+	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
+	ld c, 0
+	call QueueOamUpdate
 	jp .done_input_processing	; Don't check any other input if returning to iteration
-.done_w_start
+.check_directions
 	; For the dpad input, we want a way to tell if changes were done
 	; We're gonna use B as a bool to know this
 	ld a, 0
 	ld b, a
 
-	; For each direction input, we will store XY values in DE
-	; And keep track of whether changes were made in B
-	ld a, [oPlayerCursorX]
-	ld d, a
-	ld a, [oPlayerCursorY]
-	ld e, a
 
 	; Down
 	ld a, c			; Recover the new keys
 	and a, INPUT_DOWN	; Filter the down key
 	jp z, .do_up		; If down was pressed, continue
-	ld a, e			; Load the player cursor Y value
-	add 8			; Bring it down by 1 tile
-	ld e, a			; New Y value in E
+	; Update the grid coordinates
+	ld a, [wPlayerCursorGridY]
+	inc a
+	ld [wPlayerCursorGridY], a
 	inc b			; We flag that a change was made
 .do_up
 	; Up
 	ld a, c
 	and a, INPUT_UP
 	jp z, .do_left
-	ld a, e
-	sub 8
-	ld e, a		; Prepare to queue the Y change
+	; Update the grid coordinates
+	ld a, [wPlayerCursorGridY]
+	dec a
+	ld [wPlayerCursorGridY], a
 	inc b
 .do_left
 	; Left
 	ld a, c
 	and a, INPUT_LEFT
 	jp z, .do_right
-	ld a, d
-	sub 8
-	ld d, a
+	; Update the grid coordinates
+	ld a, [wPlayerCursorGridX]
+	dec a
+	ld [wPlayerCursorGridX], a
 	inc b
 .do_right
 	; Right
 	ld a, c
 	and a, INPUT_RIGHT
 	jp z, .do_cursor_queue
-	ld a, d
-	add 8
-	ld d, a
+	; Update the grid coordinates
+	ld a, [wPlayerCursorGridX]
+	inc a
+	ld [wPlayerCursorGridX], a
 	inc b
 .do_cursor_queue
 	; Check if any change was flagged in B reg
@@ -768,13 +777,63 @@ PlayerInputState:
 	cp 0
 	jp z, .done_w_directions
 
-	; Preparing the procedure calls
+	; TODO : Do bound check for the grid position
+.bound_check_top
+	ld a, [wPlayerCursorGridY]
+	cp $FF
+	jp nz, .bound_check_bottom
+	ld a, 0
+	ld [wPlayerCursorGridY], a
+.bound_check_bottom
+	ld a, [wPlayerCursorGridY]
+	cp 32
+	jp nz, .bound_check_left
+	ld a, 31
+	ld [wPlayerCursorGridY], a
+.bound_check_left
+	ld a, [wPlayerCursorGridX]
+	cp $FF
+	jp nz, .bound_check_right
+	ld a, 0
+	ld [wPlayerCursorGridX], a
+.bound_check_right
+	ld a, [wPlayerCursorGridX]
+	cp 32
+	jp nz, .update_sprite_position
+	ld a, 31
+	ld [wPlayerCursorGridX], a
+.update_sprite_position
+	; Calculate sprite X position
+	ld a, [wPlayerCursorGridX]
+	rlca ; x2
+	rlca ; x4
+	rlca ; x8
+	add 8 ; Add 8 for overscan
+	; Add the new position to queue
+	ld c, a
 	ld b, LOW(oPlayerCursorX)	; Load the address of Cursor X
-	ld c, d				; Load the new value of Cursor X
 	call QueueOamUpdate		; Call the OAM queue procedure
+	; Calculate sprite Y position
+	ld a, [wPlayerCursorGridY]
+	rlca ; x2
+	rlca ; x4
+	rlca ; x8
+	add 16 ; Add 8 for overscan
+	; Add to OAM queue
+	ld c, a
 	ld b, LOW(oPlayerCursorY)	; Same thing for Y here
-	ld c, e				; ...
 	call QueueOamUpdate		; ...
+	; TODO : Based on calculated sprite position, scroll the camera
+
+	; For each direction input, we will store XY values in DE
+	; And keep track of whether changes were made in B
+	;ld a, [oPlayerCursorX]
+	;ld d, a
+	;ld a, [oPlayerCursorY]
+	;ld e, a
+
+
+	; Preparing the procedure calls
 .done_w_directions
 	; ... buttons ...
 .done_input_processing
@@ -972,17 +1031,18 @@ SECTION "VRAMQueue", WRAM0, ALIGN[2]
 	wScrollX: db			; Camera scrolling X buffer
 	wScrollY: db			; Camera scrolling Y buffer
 
-SECTION "WRAM", WRAM0
-	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
-	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
-	wOamUpdateReady: db	; 0 : Don't update object in vblank, 1: Do update objects
-
 SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
 	wNewKeys: db	; Keys that are "just pressed", this current frame
 
-SECTION "Game State", WRAM0
+SECTION "WRAM", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
+	wGridToggle: db			; Flips on and off between iterations to determine the cell buffer used
+	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
+	wOamUpdateReady: db		; 0 : Don't update object in vblank, 1: Do update objects
+	; Player grid input
+	wPlayerCursorGridX: db		; Grid X position of the player
+	wPlayerCursorGridY: db		; Grid Y position of the player
 
 SECTION "OAM", OAM
 	; Player cursor values
