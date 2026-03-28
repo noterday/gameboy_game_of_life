@@ -102,6 +102,12 @@ VBlankHandler:
 	; Update keys first
 	call UpdateKeys		; Get the player input
 
+	; Update scroll
+	ld a, [wScrollX]
+	ld [rSCX], a
+	ld a, [wScrollY]
+	ld [rSCY], a
+
 	; Update OAM
 	; Is Oam ready to be updated?
 	ld a, [wOamUpdateReady]
@@ -268,6 +274,8 @@ ClearOam:
 	ld [wState], a
 	ld [wGridToggle], a
 	ld [wCellTileMapUpdateReady], a
+	ld [wScrollX], a
+	ld [wScrollY], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	; VRAM Queue cursor
@@ -623,52 +631,54 @@ GetNextByte:
 FinishIterating:
 	; Process player inputs
 	; Check for camera scrolling
-	ld a, [rSCX]	
+	ld a, [wScrollX]	
 	ld b, a			; Camera X in B register
-	ld a, [rSCY]
+	ld a, [wScrollY]
 	ld c, a			; Camera Y in C register
 	ld a, [wCurKeys]	; Current keys in A
 	ld d, a			; Saving the current keys in D register
 
 	; Check down
 	and a, INPUT_DOWN
-	jp z, .done_checking_down
+	jp z, .check_up
 	; Scroll down
 	ld a, c
-	cp 142
-	jp nc, .done_checking_down	; Skip scrolling if you hit the down limit
+	cp 110
+	jp nc, .check_up; Skip scrolling if you hit the down limit
 	add SCROLLING_SPEED
-	ld [rSCY], a
-.done_checking_down
+	ld [wScrollY], a
+.check_up
 	; Check up
 	ld a, d			; Recover inputs
 	and a, INPUT_UP
-	jp z, .done_checking_up
-	; Scroll down
+	jp z, .check_left
+	; Scroll up
 	ld a, c
-	cp SCROLLING_SPEED
-	jp c, .done_checking_up 	; Skip scrolling if you hit the up limit
+	cp 1
+	jp c, .check_left	; Skip scrolling if you hit the up limit
 	sub SCROLLING_SPEED
-	ld [rSCY], a
-.done_checking_up; Check if the player inputs called to interrupt the iteration
+	ld [wScrollY], a
+.check_left; Check if the player inputs called to interrupt the iteration
 	; Check left
 	ld a, d			; Recover inputs
 	and a, INPUT_LEFT
-	cp SCROLLING_SPEED
-	jp c, .done_checking_left	; Skip scrolling if you hit the left limit
+	jp z, .check_right
+	ld a, b 
+	cp 1
+	jp c, .check_right	; Skip scrolling if you hit the left limit
 	sub SCROLLING_SPEED
-	ld [rSCX], a
-.done_checking_left
+	ld [wScrollX], a
+.check_right
 	ld a, d			; Recover inputs
 	and a, INPUT_RIGHT
-	jp z, .done_checking_right
+	jp z, .check_other_buttons
 	; Scroll right
 	ld a, b
-	cp 159
-	jp nc, .done_checking_right	; Skip scrolling if you hit the right limit
+	cp 96	; How large you can go without camera looping left
+	jp nc, .check_other_buttons	; Skip scrolling if you hit the right limit
 	add SCROLLING_SPEED
-	ld [rSCX], a
-.done_checking_right
+	ld [wScrollX], a
+.check_other_buttons
 	; Check for buttons
 	ld a, d			; Recover inputs
 	and a, INPUT_SELECT | INPUT_A | INPUT_B ; If player pressed A, B or Select
@@ -953,12 +963,14 @@ SECTION "Cells", WRAM0, ALIGN[8] ; Needs to be alligned to a multiple of 4 to wo
 	wCells2: db	; Other buffer
 	DS CELL_TOTAL-1 ; Keep going to 128 bytes
 
-SECTION "VRAMTileQueue", WRAM0, ALIGN[2]
+SECTION "VRAMQueue", WRAM0, ALIGN[2]
 	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
 	DS 255 				; We might need a lot of updates to be queued quickly for some GoL configurations
 	; (Note : This is also guaranteed to be alligned to XX00 since we just used 256 bytes in an alligned section
 	wOamUpdateQueue: db		; OAM update queue 
 	DS 127				; Reasonable limit?
+	wScrollX: db			; Camera scrolling X buffer
+	wScrollY: db			; Camera scrolling Y buffer
 
 SECTION "WRAM", WRAM0
 	wGridToggle: db		; Flips on and off between iterations to determine the cell buffer used
