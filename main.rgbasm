@@ -713,6 +713,9 @@ FinishIterating:
 
 ; Start if state is STATE_PLAYER_INPUT
 PlayerInputState:
+	; Prevent cell update temporarily
+	ld a, 0
+	ld [wCellTileMapUpdateReady], a
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld c, a			; Load just pressed inputs into C to save them close by
@@ -730,7 +733,6 @@ PlayerInputState:
 	; We're gonna use B as a bool to know this
 	ld a, 0
 	ld b, a
-
 
 	; Down
 	ld a, c			; Recover the new keys
@@ -775,9 +777,8 @@ PlayerInputState:
 	; Check if any change was flagged in B reg
 	ld a, b
 	cp 0
-	jp z, .done_w_directions
+	jp z, .check_a_button
 
-	; TODO : Do bound check for the grid position
 .bound_check_top
 	ld a, [wPlayerCursorGridY]
 	cp $FF
@@ -834,12 +835,57 @@ PlayerInputState:
 
 
 	; Preparing the procedure calls
-.done_w_directions
+.check_a_button ; Toggle grid cell if A is pressed
+	; Right
+	ld a, c
+	and a, INPUT_A
+	jp z, .check_b_button
+	call UpdateCellAtCursor
+	ld a, 1
+	ld [wCellTileMapUpdateReady], a
+	halt
+.check_b_button ; Delete a grid cell if B is pressed
+
 	; ... buttons ...
 .done_input_processing
 	halt	; Wait till end of frame
 	jp Main
 
+; Updates the GoL cell at the player cursor coordinates
+; The only action we support is toggling a cell
+; TODO : Make this actually work
+; It bugs because ToggleCellAtHL handles the double buffer idea weird, and expects to be ran at the start of the game
+; We could fix this by treating the modified buffer in PlayerInputMode like a completely new game
+; Like we clear wCells2, make wCells the one that matter, and write to that then start the game again?
+; What's the cheapest way to make this work?
+UpdateCellAtCursor:
+	push bc
+	push de
+	; 1. Calculate the offset from _SCRN0 that CursorX and CursorY represent
+	; 1.1. Get the Y value into HL, and add that 3 time to do *8
+	ld a, 0
+	ld h, a
+	ld a, [wPlayerCursorGridY]
+	ld l, a
+	add hl, hl ;x2
+	add hl, hl ;x4
+	add hl, hl ;x8
+	add hl, hl ;x16
+	add hl, hl ;x32
+	; 1.2. Add the X value to HL
+	ld a, 0
+	ld d, a
+	ld a, [wPlayerCursorGridX]
+	ld e, a
+	add hl, de
+	; 2. Get that screen value into HL
+	ld de, _SCRN0
+	add hl, de
+	; 3. Call ToggleCellAtHL (note: That procedure needs to handle both wCells buffer correctly)
+	call ToggleCellAtHL
+	pop de
+	pop bc
+	ret
 
 ; Player cursor is a vram address essentially (which tile it's on)
 ; So you need to go from that space down to the bitfield by doing /8
