@@ -3,8 +3,8 @@ INCLUDE "hardware.inc"
 DEF WORD_SIZE EQU 65535
 DEF CELL_TOTAL EQU 128 
 DEF DOUBLE_CELL_TOTAL EQU 256
-DEF CELL_ROW EQU 4   ; 4 bytes
-DEF DOUBLE_CELL_ROW EQU 8 ; 8 bytes
+DEF CELL_ROW EQU 4
+DEF DOUBLE_CELL_ROW EQU 8
 ; Game states
 DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER_INPUT EQU 1
@@ -99,9 +99,16 @@ VBlankInterrupt:
 ; The VBLANK interrupt
 SECTION "VBlank Handler", ROM0
 VBlankHandler:
-	; Update keys first
+	; Update keys first, if allowed to
+	ld a, [wKillFrames]
+	cp 0
+	jp z, .update_key
+	dec a
+	ld [wKillFrames], a
+	jp .update_scroll
+.update_key
 	call UpdateKeys		; Get the player input
-
+.update_scroll
 	; Update scroll
 	ld a, [wScrollX]
 	ld [rSCX], a
@@ -162,7 +169,7 @@ VBlankHandler:
 	; Load cursor into C and check if we can skip work
 	ld a, [hTileQueueCursor] 	; Get the queue cursor into A
 	cp 0
-	jp z, .vblank_done		; If tile queue is at 0, skip doing work
+	jp z, .tile_update_done		; If tile queue is at 0, skip doing work
 	ld c, a				; Load the low half of BC
 	dec c		; When coming from iterating, the cursor points to the byte after the end of the queue
 
@@ -203,6 +210,7 @@ VBlankHandler:
 	jp nz, .vblank_done
 	; If the cursor is back to the start position, clear the "update ready" status
 	ld a, 0
+.tile_update_done
 	ld [wCellTileMapUpdateReady], a
 .vblank_done
 	; Pop the registers back
@@ -278,6 +286,7 @@ ClearOam:
 	ld [wScrollY], a
 	ld [wPlayerCursorGridX], a
 	ld [wPlayerCursorGridY], a
+	ld [wKillFrames], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	; VRAM Queue cursor
@@ -301,23 +310,23 @@ clearCells:
 ; Some Debug stuff for testing cells
 ; We set different values in the 8x3 block of cells in the top right corner
 	; 3 bits on row 4, starting at 8
-	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+0
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+1
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*4)*8)+2
-	call ToggleCellAtHL
-	; 2 bits on row 5, starting at 8
-	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+0
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*5)*8)+2
-	call ToggleCellAtHL
-	; 3 bits on row 6, starting at 8
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+0
 	call ToggleCellAtHL
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+1
 	call ToggleCellAtHL
 	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
+	call ToggleCellAtHL
+	; 2 bits on row 5, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+2
+	call ToggleCellAtHL
+	; 3 bits on row 6, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
 	call ToggleCellAtHL
 
 ; turn the LCD on
@@ -336,6 +345,14 @@ clearCells:
 
 Main: ; The looping point for the game's main loop
 	; Check if the current state is STATE_ITERATING
+	; Check if waiting for a screen update, if so, halt
+	ld a, [wCellTileMapUpdateReady]
+	cp 0
+	jp z, .done_waiting
+	halt	; Wait and do nothing
+	jp Main
+.done_waiting
+	; Pick a game state
 	ld a, [wState]
 	cp STATE_ITERATING
 	jp z, IteratingState
@@ -349,13 +366,6 @@ Main: ; The looping point for the game's main loop
 ; Game state for the game of life iterations
 ; This will process a full iteration of the cell grid before taking inputs
 IteratingState:
-	; Check if waiting for a screen update, if so, halt
-	ld a, [wCellTileMapUpdateReady]
-	cp 0
-	jp z, .done_waiting
-	halt	; Wait and do nothing
-	jp IteratingState
-.done_waiting
 	; Choose a buffer to iterate
 	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
 	cp 0
@@ -689,10 +699,9 @@ FinishIterating:
 	; Go into player input state
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
-	ld a, 0
-	ld [wNewKeys], a
-	ld [wCurKeys], a
 	; Show the player cursor
+	ld a, 2
+	ld [wKillFrames], a
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
 	ld c, 2
 	call QueueOamUpdate
@@ -853,11 +862,8 @@ PlayerInputState:
 
 ; Updates the GoL cell at the player cursor coordinates
 ; The only action we support is toggling a cell
-; TODO : Make this actually work
-; It bugs because ToggleCellAtHL handles the double buffer idea weird, and expects to be ran at the start of the game
-; We could fix this by treating the modified buffer in PlayerInputMode like a completely new game
-; Like we clear wCells2, make wCells the one that matter, and write to that then start the game again?
-; What's the cheapest way to make this work?
+; TODO : This procedure only results in the correct behavior some of the time. Why?
+; Also, sometimes, the grid will update after you paused the iteration. Why is that?
 UpdateCellAtCursor:
 	push bc
 	push de
@@ -881,8 +887,9 @@ UpdateCellAtCursor:
 	; 2. Get that screen value into HL
 	ld de, _SCRN0
 	add hl, de
-	; 3. Call ToggleCellAtHL (note: That procedure needs to handle both wCells buffer correctly)
-	call ToggleCellAtHL
+
+	; 3. Call ToggleCellAtHL
+	call ToggleCellAtHL	; Procedure call for cell update
 	pop de
 	pop bc
 	ret
@@ -897,14 +904,19 @@ UpdateCellAtCursor:
 ; Instantly updates the cell at the given vblank address, and it's internal representation
 ; Input 
 ;	HL
+;	D : Don't do VRAM update if this is $FF
 ; Output
 ;	NONE
-; Thrashes every registers lol
+; Thrashes every registers
 ToggleCellAtHL:
 	; The code need to branch depending on the LCD state
+	ld a, d
+	cp $FF
+	jp z, .bit_cell_changes
 	ld a, [rLCDC]	; Loading the on/off state of the screen
 	cp 0
 	jp nz, .add_change_to_queue	; If rLCDC is not zero, the screen is on
+
 	; Do the changes immediately if the screen is off
 	ld a, [hl]	; Load the tile to update
 	cpl a			; Invert the VRAM byte
@@ -949,12 +961,25 @@ ToggleCellAtHL:
 	rr l
 	srl h
 	rr l
-	; Put it back in the cell ranges
+
+; Put it back in the cell ranges of the current buffer
+	ld a, [wGridToggle]
+	cp 0
+	jp nz, .use_buffer2
 	ld a, h
 	add HIGH(wCells)
 	ld h, a
+	jp .chose_buffer
+.use_buffer2
+	ld a, h
+	add HIGH(wCells2)
+	ld h, a
+	ld a, l
+	add LOW(wCells2)
+	ld l, a
+.chose_buffer
 
-	; Find bit D, inside of byte [HL]
+; Find bit D, inside of byte [HL]
 	ld a, [hl]	; We now have our cell byte
 	ld e, %10000000 ; E is our bit update mask, it starts left and will move right
 	inc d		; Needed to dec it as part of a loop
@@ -1089,6 +1114,7 @@ SECTION "WRAM", WRAM0
 	; Player grid input
 	wPlayerCursorGridX: db		; Grid X position of the player
 	wPlayerCursorGridY: db		; Grid Y position of the player
+	wKillFrames: db			; Frames to waste doing nothing inside the player input state. To prevent input issues
 
 SECTION "OAM", OAM
 	; Player cursor values
