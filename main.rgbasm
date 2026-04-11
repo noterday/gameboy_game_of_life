@@ -699,9 +699,66 @@ FinishIterating:
 	; Go into player input state
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
-	; Show the player cursor
-	ld a, 2
-	ld [wKillFrames], a
+
+	; Add some dead input frames that will prevent some bugs between the game states
+	ld a, 2			; Probably overkill, definitely not a good way to fix this issue...
+	ld [wKillFrames], a	; Add two frames of input not registering to avoid double press issues
+	; Prepare the player cursor by recentering it if off screen 
+	ld a, 0
+	ld b, a		; The B register will be set to 1 if the cursor is outside the camera bounds
+	ld a, [rSCX]	; Load the camera X register
+	add 16 		; A position slightly offset from the edge of the screen
+	ld d, a		; D stores the left bound
+	add 128 	; A position slightly offset from the right edge
+	ld e, a		; E stores the right bound
+	; Calculate sprite X position
+	ld a, [wPlayerCursorGridX]
+	rlca ; x2
+	rlca ; x4
+	rlca ; x8
+.cursor_adjust_left
+	cp d
+	jp nc, .cursor_adjust_right
+	jp .cursor_adjust_needed
+.cursor_adjust_right
+	cp e
+	jp c, .cursor_adjust_up
+	jp .cursor_adjust_needed
+.cursor_adjust_up
+	ld a, [rSCY]	; Load the camera Y register
+	add 16 		; a position slightly offset from the edge of the screen
+	ld d, a		; D stores the top bound
+	add 112 	; a position slightly offset from the right edge
+	ld e, a		; E stores the bottom bound
+	; Calculate sprite Y position
+	ld a, [wPlayerCursorGridY]
+	rlca ; x2
+	rlca ; x4
+	rlca ; x8
+	; Adjust up
+	cp d
+	jp nc, .cursor_adjust_down
+	jp .cursor_adjust_needed
+.cursor_adjust_down
+	cp e
+	jp c, .done_checking_end_iteration_inputs
+	jp .cursor_adjust_needed
+.cursor_adjust_needed
+	; Get the coordinates at the center of the screen
+	ld a, [rSCX]
+	and %11111000
+	rrca ; /2
+	rrca ; /4
+	rrca ; /8
+	add 9
+	ld [wPlayerCursorGridX], a
+	ld a, [rSCY]
+	and %11111000
+	rrca
+	rrca
+	rrca
+	add 8
+	ld [wPlayerCursorGridY], a
 .done_checking_end_iteration_inputs
 	; End of iteration processing
 	; Swap which buffer is written to
