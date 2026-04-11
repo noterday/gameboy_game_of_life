@@ -702,9 +702,6 @@ FinishIterating:
 	; Show the player cursor
 	ld a, 2
 	ld [wKillFrames], a
-	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
-	ld c, 2
-	call QueueOamUpdate
 .done_checking_end_iteration_inputs
 	; End of iteration processing
 	; Swap which buffer is written to
@@ -727,7 +724,7 @@ PlayerInputState:
 	ld [wCellTileMapUpdateReady], a
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
-	ld c, a			; Load just pressed inputs into C to save them close by
+	ld d, a			; Load just pressed inputs into C to save them close by
 	and a, INPUT_START	; Check for "Start" first
 	jp z, .check_directions ; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
@@ -740,53 +737,53 @@ PlayerInputState:
 .check_directions
 	; For the dpad input, we want a way to tell if changes were done
 	; We're gonna use B as a bool to know this
-	ld a, 0
-	ld b, a
+	;ld a, 0
+	;ld b, a
 
 	; Down
-	ld a, c			; Recover the new keys
+	ld a, d			; Recover the new keys
 	and a, INPUT_DOWN	; Filter the down key
 	jp z, .do_up		; If down was pressed, continue
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridY]
 	inc a
 	ld [wPlayerCursorGridY], a
-	inc b			; We flag that a change was made
+	;inc b			; We flag that a change was made
 .do_up
 	; Up
-	ld a, c
+	ld a, d
 	and a, INPUT_UP
 	jp z, .do_left
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridY]
 	dec a
 	ld [wPlayerCursorGridY], a
-	inc b
+	;inc b
 .do_left
 	; Left
-	ld a, c
+	ld a, d
 	and a, INPUT_LEFT
 	jp z, .do_right
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridX]
 	dec a
 	ld [wPlayerCursorGridX], a
-	inc b
+	;inc b
 .do_right
 	; Right
-	ld a, c
+	ld a, d
 	and a, INPUT_RIGHT
 	jp z, .do_cursor_queue
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridX]
 	inc a
 	ld [wPlayerCursorGridX], a
-	inc b
+	;inc b
 .do_cursor_queue
 	; Check if any change was flagged in B reg
-	ld a, b
-	cp 0
-	jp z, .check_a_button
+	;ld a, b
+	;cp 0
+	;jp z, .check_a_button
 
 .bound_check_top
 	ld a, [wPlayerCursorGridY]
@@ -812,29 +809,59 @@ PlayerInputState:
 	jp nz, .update_sprite_position
 	ld a, 31
 	ld [wPlayerCursorGridX], a
+; Do camera bound checks here. 3 steps
+; 1. Calculate the modulo 8 of the camera position and add it to the sprite position so it looks good when you're in between tiles
+; 2. Calculate if the cursor is outside a box which is 24 pixels smaller than the actual camera. If so, the camera must move towards the cursor by 8
 .update_sprite_position
+	; Offset the sprite if the camera is not grid alligned
+	ld a, [rSCX]
+	ld e, a
 	; Calculate sprite X position
 	ld a, [wPlayerCursorGridX]
 	rlca ; x2
 	rlca ; x4
 	rlca ; x8
 	add 8 ; Add 8 for overscan
+	sub e	; Camera offset
 	; Add the new position to queue
 	ld c, a
+	; Call the routine to queue the cursor change
 	ld b, LOW(oPlayerCursorX)	; Load the address of Cursor X
 	call QueueOamUpdate		; Call the OAM queue procedure
+	; Using the screen X position of the cursor, check if the camera needs to scroll
+	; TODO : Skip doing the check if the camera itself is already close to the edge
+;.camera_bound_check_left
+;	ld a, [rSCX]
+;	cp 8
+;	jp c, .camera_bound_check_right		; If the camera isn't even far enough to justify scrolling it, then don't
+;	add 24		; The left bounding box will be 24 pixels after the start of the camera zone
+;	cp c		; Comparing A, start of the leftmost zone where the camera should move, to the cursor position
+;	jp nc, .camera_bound_check_right ; 
+;	ld a, [wScrollX]
+;	sub 8
+;	ld [wScrollX], a
+	
+;.camera_bound_check_right
+;	ld a, [rSCX]
+;	; cp camerax + camera_width - 8
+;	; test if 24 before (sub24)
+
+.sprite_y_position
+	; Offset the sprite if the camera is not grid alligned
+	ld a, [rSCY]
+	ld e, a
 	; Calculate sprite Y position
 	ld a, [wPlayerCursorGridY]
 	rlca ; x2
 	rlca ; x4
 	rlca ; x8
-	add 16 ; Add 8 for overscan
+	add 16 ; Add 16 for overscan
+	sub e	; Camera offset
 	; Add to OAM queue
 	ld c, a
 	ld b, LOW(oPlayerCursorY)	; Same thing for Y here
 	call QueueOamUpdate		; ...
 	; TODO : Based on calculated sprite position, scroll the camera
-
 	; For each direction input, we will store XY values in DE
 	; And keep track of whether changes were made in B
 	;ld a, [oPlayerCursorX]
@@ -846,7 +873,7 @@ PlayerInputState:
 	; Preparing the procedure calls
 .check_a_button ; Toggle grid cell if A is pressed
 	; Right
-	ld a, c
+	ld a, d
 	and a, INPUT_A
 	jp z, .check_b_button
 	call UpdateCellAtCursor
@@ -857,6 +884,9 @@ PlayerInputState:
 
 	; ... buttons ...
 .done_input_processing
+	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
+	ld c, 2
+	call QueueOamUpdate
 	halt	; Wait till end of frame
 	jp Main
 
@@ -998,6 +1028,7 @@ ToggleCellAtHL:
 ; C	: The value to write down
 QueueOamUpdate:
 	; Disable OAM vblank update so we dont break things if it happens mid function
+	push bc
 	ld a, 0
 	ld [wOamUpdateReady], a
 
@@ -1022,6 +1053,7 @@ QueueOamUpdate:
 	ld a, 1
 	ld [wOamUpdateReady], a
 	; Leave
+	pop bc
 	ret
 
 ; Useful routines
