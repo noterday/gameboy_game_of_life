@@ -366,6 +366,8 @@ Main: ; The looping point for the game's main loop
 ; Game state for the game of life iterations
 ; This will process a full iteration of the cell grid before taking inputs
 IteratingState:
+	ld a, 0
+	ld [wKeyBuffer], a
 	; Choose a buffer to iterate
 	ld a, [wGridToggle]	; Use wGridToggle to choose which buffer to iterate
 	cp 0
@@ -647,7 +649,7 @@ FinishIterating:
 	ld b, a			; Camera X in B register
 	ld a, [wScrollY]
 	ld c, a			; Camera Y in C register
-	ld a, [wCurKeys]	; Current keys in A
+	ld a, [wKeyBuffer]	; Keys since the start of the iteration state (when the buffer was last cleared"
 	ld d, a			; Saving the current keys in D register
 
 	; Check down
@@ -1168,6 +1170,9 @@ UpdateKeys:
 	ld a, b
 	ld [wCurKeys], a
 	; Key press history that remembers between frames
+	ld a, [wKeyBuffer]
+	or b	; This will make every input accumulate in the buffer until it's manually cleared in code.
+	ld [wKeyBuffer], a
 	ret
 .onenibble ; load nibble into a
 	ldh [rP1], a ; switch the key matrix. why hram?
@@ -1217,6 +1222,7 @@ SECTION "VRAMQueue", WRAM0, ALIGN[2]
 SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
 	wNewKeys: db	; Keys that are "just pressed", this current frame
+	wKeyBuffer: db	; Keys that have been pressed since the last time "wKeyBuffer" was cleared to 0. In case it takes multiple frames to process inputs.
 
 SECTION "WRAM", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
