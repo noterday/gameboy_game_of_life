@@ -792,12 +792,10 @@ PlayerInputState:
 	call QueueOamUpdate
 	jp .done_input_processing	; Don't check any other input if returning to iteration
 .check_directions
-	; For the dpad input, we want a way to tell if changes were done
-	; We're gonna use B as a bool to know this
-	;ld a, 0
-	;ld b, a
-
-	; Down
+; Here, must do camera scrolling checks for each input
+; This will be cleaner if the bound checking is also done for each direction individually...
+; And then, reusing the same variables, we check if the camera edge is being touched
+.do_bottom
 	ld a, d			; Recover the new keys
 	and a, INPUT_DOWN	; Filter the down key
 	jp z, .do_up		; If down was pressed, continue
@@ -805,9 +803,30 @@ PlayerInputState:
 	ld a, [wPlayerCursorGridY]
 	inc a
 	ld [wPlayerCursorGridY], a
-	;inc b			; We flag that a change was made
+.bound_check_bottom
+	ld a, [wPlayerCursorGridY]
+	cp 32
+	jp nz, .camera_scroll_check_bottom
+	ld a, 31
+	ld [wPlayerCursorGridY], a
+.camera_scroll_check_bottom
+	; Calculate the cursor position in pixels (times 8)
+	add a, a ; x2
+	add a, a ; x4
+	add a, a ; x8
+	ld e, a
+	; Compare it to the camera position (bottom)
+	ld a, [rSCY]	; Load the camera position (top)
+	add (144-24)	; Adding screen size minus a few pixels
+	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
+	cp e
+	jp nc, .do_up
+	cp 112+(144-24) ; Limit where the scrolling reached the end
+	jp nc, .do_up
+	ld a, [wScrollY]
+	add 8
+	ld [wScrollY], a
 .do_up
-	; Up
 	ld a, d
 	and a, INPUT_UP
 	jp z, .do_left
@@ -815,7 +834,27 @@ PlayerInputState:
 	ld a, [wPlayerCursorGridY]
 	dec a
 	ld [wPlayerCursorGridY], a
-	;inc b
+.bound_check_top
+	ld a, [wPlayerCursorGridY]
+	cp $FF
+	jp nz, .camera_scroll_check_top
+	ld a, 0
+	ld [wPlayerCursorGridY], a
+.camera_scroll_check_top
+	; Calculate the cursor position in pixels (times 8)
+	add a, a ; x2
+	add a, a ; x4
+	add a, a ; x8
+	ld e, a
+	ld a, [rSCY]	; Load the camera position (top)
+	inc a
+	cp e
+	jp c, .do_left
+	cp 9 ; Limit where you finished scrolling up
+	jp c, .do_left
+	ld a, [wScrollY]
+	sub 8
+	ld [wScrollY], a
 .do_left
 	; Left
 	ld a, d
@@ -825,50 +864,61 @@ PlayerInputState:
 	ld a, [wPlayerCursorGridX]
 	dec a
 	ld [wPlayerCursorGridX], a
-	;inc b
+.bound_check_left
+	ld a, [wPlayerCursorGridX]
+	cp $FF
+	jp nz, .camera_scroll_check_left
+	ld a, 0
+	ld [wPlayerCursorGridX], a
+.camera_scroll_check_left
+	; Calculate the cursor position in pixels (times 8)
+	add a, a ; x2
+	add a, a ; x4
+	add a, a ; x8
+	ld e, a
+	ld a, [rSCX]
+	inc a
+	cp e
+	jp c, .do_right
+	cp 9 ; Limit where ou finished scrolling left
+	jp c, .do_right
+	ld a, [wScrollX]
+	sub 8
+	ld [wScrollX], a
 .do_right
 	; Right
 	ld a, d
 	and a, INPUT_RIGHT
-	jp z, .do_cursor_queue
+	jp z, .update_sprite_position
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridX]
 	inc a
 	ld [wPlayerCursorGridX], a
-	;inc b
-.do_cursor_queue
-	; Check if any change was flagged in B reg
-	;ld a, b
-	;cp 0
-	;jp z, .check_a_button
-
-.bound_check_top
-	ld a, [wPlayerCursorGridY]
-	cp $FF
-	jp nz, .bound_check_bottom
-	ld a, 0
-	ld [wPlayerCursorGridY], a
-.bound_check_bottom
-	ld a, [wPlayerCursorGridY]
-	cp 32
-	jp nz, .bound_check_left
-	ld a, 31
-	ld [wPlayerCursorGridY], a
-.bound_check_left
-	ld a, [wPlayerCursorGridX]
-	cp $FF
-	jp nz, .bound_check_right
-	ld a, 0
-	ld [wPlayerCursorGridX], a
 .bound_check_right
 	ld a, [wPlayerCursorGridX]
 	cp 32
-	jp nz, .update_sprite_position
+	jp nz, .camera_scroll_check_right
 	ld a, 31
 	ld [wPlayerCursorGridX], a
-; Do camera bound checks here. 3 steps
-; 1. Calculate the modulo 8 of the camera position and add it to the sprite position so it looks good when you're in between tiles
-; 2. Calculate if the cursor is outside a box which is 24 pixels smaller than the actual camera. If so, the camera must move towards the cursor by 8
+.camera_scroll_check_right
+	; Calculate the cursor position in pixels (times 8)
+	add a, a ; x2
+	add a, a ; x4
+	add a, a ; x8
+	ld e, a
+	; Compare it to the camera position (right)
+	ld a, [rSCX]	; Load the camera position (left)
+	add (160-24)	; Adding screen size minus a few pixels
+	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
+	cp e
+	jp nc, .update_sprite_position
+	cp 96+(160-24) ; Limit where the scrolling reached the end
+	jp nc, .update_sprite_position
+	ld a, [wScrollX]
+	add 8
+	ld [wScrollX], a
+
+	nop
 .update_sprite_position
 	; Offset the sprite if the camera is not grid alligned
 	ld a, [rSCX]
@@ -885,24 +935,6 @@ PlayerInputState:
 	; Call the routine to queue the cursor change
 	ld b, LOW(oPlayerCursorX)	; Load the address of Cursor X
 	call QueueOamUpdate		; Call the OAM queue procedure
-	; Using the screen X position of the cursor, check if the camera needs to scroll
-	; TODO : Skip doing the check if the camera itself is already close to the edge
-;.camera_bound_check_left
-;	ld a, [rSCX]
-;	cp 8
-;	jp c, .camera_bound_check_right		; If the camera isn't even far enough to justify scrolling it, then don't
-;	add 24		; The left bounding box will be 24 pixels after the start of the camera zone
-;	cp c		; Comparing A, start of the leftmost zone where the camera should move, to the cursor position
-;	jp nc, .camera_bound_check_right ; 
-;	ld a, [wScrollX]
-;	sub 8
-;	ld [wScrollX], a
-	
-;.camera_bound_check_right
-;	ld a, [rSCX]
-;	; cp camerax + camera_width - 8
-;	; test if 24 before (sub24)
-
 .sprite_y_position
 	; Offset the sprite if the camera is not grid alligned
 	ld a, [rSCY]
@@ -918,16 +950,7 @@ PlayerInputState:
 	ld c, a
 	ld b, LOW(oPlayerCursorY)	; Same thing for Y here
 	call QueueOamUpdate		; ...
-	; TODO : Based on calculated sprite position, scroll the camera
-	; For each direction input, we will store XY values in DE
-	; And keep track of whether changes were made in B
-	;ld a, [oPlayerCursorX]
-	;ld d, a
-	;ld a, [oPlayerCursorY]
-	;ld e, a
 
-
-	; Preparing the procedure calls
 .check_a_button ; Toggle grid cell if A is pressed
 	; Right
 	ld a, d
