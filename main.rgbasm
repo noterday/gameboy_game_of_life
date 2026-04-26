@@ -279,6 +279,8 @@ ClearOam:
 	ld a, 0
 	ld [wCurKeys], a
 	ld [wNewKeys], a
+	ld [wKeyBuffer], a
+	ld [wKeyRepeatFrameCount], a
 	ld [wState], a
 	ld [wGridToggle], a
 	ld [wCellTileMapUpdateReady], a
@@ -1167,6 +1169,15 @@ UpdateKeys:
 	xor a, b ; a = keys that changed state
 	and a, b ; a = keys that changes state to pressed
 	ld [wNewKeys], a
+	ld a, [wKeyRepeatFrameCount]
+	jp nz, .dont_inc_key_repeat; Zero flag should be set if wNewKeys is empty, meaning no new keys was set
+.inc_key_repeat
+	inc a
+	jp .key_repeat_step_done
+.dont_inc_key_repeat
+	ld a, 0
+.key_repeat_step_done
+	ld [wKeyRepeatFrameCount], a
 	ld a, b
 	ld [wCurKeys], a
 	; Key press history that remembers between frames
@@ -1223,6 +1234,7 @@ SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
 	wNewKeys: db	; Keys that are "just pressed", this current frame
 	wKeyBuffer: db	; Keys that have been pressed since the last time "wKeyBuffer" was cleared to 0. In case it takes multiple frames to process inputs.
+	wKeyRepeatFrameCount: db	; How many frames has the same key combination been pressed?
 
 SECTION "WRAM", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
