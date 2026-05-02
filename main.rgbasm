@@ -10,7 +10,9 @@ DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER_INPUT EQU 1
 
 ; Constants
-DEF SCROLLING_SPEED = 3
+DEF SLOW_SCROLL_SPEED = 2
+DEF FAST_SCROLL_SPEED = 5
+DEF FAST_SCROLL_TIMER = 40
 
 ; Inputs
 DEF INPUT_DOWN =	%10000000
@@ -653,15 +655,28 @@ FinishIterating:
 	ld c, a			; Camera Y in C register
 	ld a, [wKeyBuffer]	; Keys since the start of the iteration state (when the buffer was last cleared"
 	ld d, a			; Saving the current keys in D register
-
+	; todo : Using the key repeat counter, set a register to either the SLOW_SCROLL_SPEED or FAST_SCROLL_SPEED. Define these.
+	; Use similar logic for the cursor later
+	;wKeyRepeatFrameCount
+	ld a, [wKeyRepeatFrameCount]
+	cp FAST_SCROLL_TIMER 
+	jp c, .use_slow_scroll
+	ld a, FAST_SCROLL_SPEED
+	ld e, a
+	jp .chose_scroll_speed
+.use_slow_scroll
+	ld a, SLOW_SCROLL_SPEED
+	ld e, a
+.chose_scroll_speed
 	; Check down
+	ld a, d
 	and a, INPUT_DOWN
 	jp z, .check_up
 	; Scroll down
 	ld a, c
 	cp 110
 	jp nc, .check_up; Skip scrolling if you hit the down limit
-	add SCROLLING_SPEED
+	add e
 	ld [wScrollY], a
 .check_up
 	; Check up
@@ -670,19 +685,25 @@ FinishIterating:
 	jp z, .check_left
 	; Scroll up
 	ld a, c
-	cp 1
-	jp c, .check_left	; Skip scrolling if you hit the up limit
-	sub SCROLLING_SPEED
+	sub e
+	jp c, .scroll_to_top_bound	; Skip scrolling if you hit the up limit
+	ld [wScrollY], a
+	jp .check_left
+.scroll_to_top_bound
+	ld a, 0
 	ld [wScrollY], a
 .check_left; Check if the player inputs called to interrupt the iteration
 	; Check left
 	ld a, d			; Recover inputs
 	and a, INPUT_LEFT
 	jp z, .check_right
-	ld a, b 
-	cp 1
-	jp c, .check_right	; Skip scrolling if you hit the left limit
-	sub SCROLLING_SPEED
+	ld a, b 			; Get the X Scroll position
+	sub e				; Scroll left by E pixels
+	jp c, .scroll_to_left_bound	; If scroll would wrapparound, just make the scroll value 0 instead
+	ld [wScrollX], a
+	jp .check_right
+.scroll_to_left_bound
+	ld a, 0
 	ld [wScrollX], a
 .check_right
 	ld a, d			; Recover inputs
@@ -692,7 +713,7 @@ FinishIterating:
 	ld a, b
 	cp 96	; How large you can go without camera looping left
 	jp nc, .check_other_buttons	; Skip scrolling if you hit the right limit
-	add SCROLLING_SPEED
+	add e
 	ld [wScrollX], a
 .check_other_buttons
 	; Check for buttons
