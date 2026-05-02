@@ -12,7 +12,8 @@ DEF STATE_PLAYER_INPUT EQU 1
 ; Constants
 DEF SLOW_SCROLL_SPEED = 2
 DEF FAST_SCROLL_SPEED = 5
-DEF FAST_SCROLL_TIMER = 40
+DEF FAST_SCROLL_TIMER = 25
+DEF KEY_REPEAT_DELAY = 8
 
 ; Inputs
 DEF INPUT_DOWN =	%10000000
@@ -655,9 +656,7 @@ FinishIterating:
 	ld c, a			; Camera Y in C register
 	ld a, [wKeyBuffer]	; Keys since the start of the iteration state (when the buffer was last cleared"
 	ld d, a			; Saving the current keys in D register
-	; todo : Using the key repeat counter, set a register to either the SLOW_SCROLL_SPEED or FAST_SCROLL_SPEED. Define these.
-	; Use similar logic for the cursor later
-	;wKeyRepeatFrameCount
+	; Choose the speed of scrolling based on how many frame the key was held
 	ld a, [wKeyRepeatFrameCount]
 	cp FAST_SCROLL_TIMER 
 	jp c, .use_slow_scroll
@@ -692,7 +691,7 @@ FinishIterating:
 .scroll_to_top_bound
 	ld a, 0
 	ld [wScrollY], a
-.check_left; Check if the player inputs called to interrupt the iteration
+.check_left
 	; Check left
 	ld a, d			; Recover inputs
 	and a, INPUT_LEFT
@@ -808,7 +807,7 @@ PlayerInputState:
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld d, a			; Load just pressed inputs into C to save them close by
 	and a, INPUT_START	; Check for "Start" first
-	jp z, .check_directions ; If start is not pressed, skip start processing
+	jp z, .check_a_button; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
 	; Hide the player cursor
@@ -816,10 +815,24 @@ PlayerInputState:
 	ld c, 0
 	call QueueOamUpdate
 	jp .done_input_processing	; Don't check any other input if returning to iteration
+.check_a_button ; Toggle grid cell if A is pressed
+	ld a, d
+	and a, INPUT_A
+	jp z, .check_b_button
+	call UpdateCellAtCursor
+	ld a, 1
+	ld [wCellTileMapUpdateReady], a
+	halt
+.check_b_button ; Delete a grid cell if B is pressed
+	; ... buttons ...
 .check_directions
-; Here, must do camera scrolling checks for each input
-; This will be cleaner if the bound checking is also done for each direction individually...
-; And then, reusing the same variables, we check if the camera edge is being touched
+	ld a, [wKeyRepeatFrameCount]
+	cp FAST_SCROLL_TIMER 
+	jp c, .do_bottom
+	ld a, (FAST_SCROLL_TIMER-KEY_REPEAT_DELAY)
+	ld [wKeyRepeatFrameCount], a
+	ld a, [wCurKeys]
+	ld d, a
 .do_bottom
 	ld a, d			; Recover the new keys
 	and a, INPUT_DOWN	; Filter the down key
@@ -975,30 +988,16 @@ PlayerInputState:
 	ld c, a
 	ld b, LOW(oPlayerCursorY)	; Same thing for Y here
 	call QueueOamUpdate		; ...
-
-.check_a_button ; Toggle grid cell if A is pressed
-	; Right
-	ld a, d
-	and a, INPUT_A
-	jp z, .check_b_button
-	call UpdateCellAtCursor
-	ld a, 1
-	ld [wCellTileMapUpdateReady], a
-	halt
-.check_b_button ; Delete a grid cell if B is pressed
-
-	; ... buttons ...
 .done_input_processing
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
 	ld c, 2
 	call QueueOamUpdate
+
 	halt	; Wait till end of frame
 	jp Main
 
 ; Updates the GoL cell at the player cursor coordinates
 ; The only action we support is toggling a cell
-; TODO : This procedure only results in the correct behavior some of the time. Why?
-; Also, sometimes, the grid will update after you paused the iteration. Why is that?
 UpdateCellAtCursor:
 	push bc
 	push de
