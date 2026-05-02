@@ -292,6 +292,7 @@ ClearOam:
 	ld [wPlayerCursorGridX], a
 	ld [wPlayerCursorGridY], a
 	ld [wKillFrames], a
+	ld [wReturnToPlayerInput], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	; VRAM Queue cursor
@@ -715,12 +716,17 @@ FinishIterating:
 	add e
 	ld [wScrollX], a
 .check_other_buttons
-	; Check for buttons
+	; Check for buttons, or the "return" variable triggered by a B button press in player input state
+	ld a, [wReturnToPlayerInput]
+	ld e, a
 	ld a, d			; Recover inputs
 	and a, INPUT_SELECT | INPUT_A | INPUT_B ; If player pressed A, B or Select
+	or e
 	cp 0
 	jp z, .done_checking_end_iteration_inputs
 	; Go into player input state
+	ld a, 0
+	ld [wReturnToPlayerInput], a
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
 
@@ -789,11 +795,9 @@ FinishIterating:
 	ld a, [wGridToggle]
 	cpl a					; Flip wGridToggle to iterate the other buffer now
 	ld [wGridToggle], a
-
 	; Tell the VBlank interrupt that a screen update is needed
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
-
 	; Return to the start
 	jp Main					
 
@@ -823,8 +827,15 @@ PlayerInputState:
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a
 	halt
-.check_b_button ; Delete a grid cell if B is pressed
-	; ... buttons ...
+.check_b_button ; Move forward one tick if B is pressed
+	ld a, d
+	and a, INPUT_B
+	jp z, .check_directions
+	ld a, 1
+	ld [wReturnToPlayerInput], a
+	ld a, STATE_ITERATING 
+	ld [wState], a			; Return to the iteration state
+	jp .done_input_processing	; Don't check any other input if returning to iteration
 .check_directions
 	ld a, [wKeyRepeatFrameCount]
 	cp FAST_SCROLL_TIMER 
@@ -1265,6 +1276,7 @@ SECTION "WRAM", WRAM0
 	wPlayerCursorGridX: db		; Grid X position of the player
 	wPlayerCursorGridY: db		; Grid Y position of the player
 	wKillFrames: db			; Frames to waste doing nothing inside the player input state. To prevent input issues
+	wReturnToPlayerInput: db	; If set to 1, the game will go to player input state at the end of iteration
 
 SECTION "OAM", OAM
 	; Player cursor values
