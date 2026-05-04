@@ -25,6 +25,61 @@ DEF INPUT_SELECT =	%00000100
 DEF INPUT_B =		%00000010
 DEF INPUT_A =		%00000001
 
+; Charmap
+CHARMAP "a", 97
+CHARMAP "b", 98
+CHARMAP "c", 99
+CHARMAP "d", 100
+CHARMAP "e", 101
+CHARMAP "f", 102
+CHARMAP "g", 103
+CHARMAP "h", 104
+CHARMAP "i", 105
+CHARMAP "j", 106
+CHARMAP "k", 107
+CHARMAP "l", 108
+CHARMAP "m", 109
+CHARMAP "n", 110
+CHARMAP "o", 111
+CHARMAP "p", 112
+CHARMAP "q", 113
+CHARMAP "r", 114
+CHARMAP "s", 115
+CHARMAP "t", 116
+CHARMAP "u", 117
+CHARMAP "v", 118
+CHARMAP "w", 119
+CHARMAP "x", 120
+CHARMAP "y", 121
+CHARMAP "z", 122
+CHARMAP "A", 65
+CHARMAP "B", 66
+CHARMAP "C", 67
+CHARMAP "D", 68
+CHARMAP "E", 69
+CHARMAP "F", 70
+CHARMAP "G", 71
+CHARMAP "H", 72
+CHARMAP "I", 73
+CHARMAP "J", 74
+CHARMAP "K", 75
+CHARMAP "L", 76
+CHARMAP "M", 77
+CHARMAP "N", 78
+CHARMAP "O", 79
+CHARMAP "P", 80
+CHARMAP "Q", 81
+CHARMAP "R", 82
+CHARMAP "S", 83
+CHARMAP "T", 84
+CHARMAP "U", 85
+CHARMAP "V", 86
+CHARMAP "W", 87
+CHARMAP "X", 88
+CHARMAP "Y", 89
+CHARMAP "Z", 90
+CHARMAP ":", 124
+CHARMAP " ", 03
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
@@ -89,6 +144,7 @@ MACRO add_cell_updates_to_vram_queue
 	inc bc
 ENDM
 
+
 ; See https://evie.gbdev.io/blog/interrupts.html
 SECTION "VBlank Interrupt", ROM0[$0040]
 VBlankInterrupt:
@@ -123,7 +179,6 @@ VBlankHandler:
 	ld a, [wOamUpdateReady]
 	cp 0
 	jp z, .tilemap_update
-	nop
 	; Get the start of the update queue for later
 	ld a, LOW(wOamUpdateQueue)
 	ld e, a					; E stores the start of the VRAM queue
@@ -153,7 +208,6 @@ VBlankHandler:
 	; Now that it's done, we cleanup by saving the cursor back to 0
 	ld a, LOW(wOamUpdateQueue)	; Should always be 0 but yknow
 	ld [hOamQueueCursor], a		; Write the 0 in the cursor position
-
 .tilemap_update
 	; Do the tilemap VBLANK queue
 	; wTileUpdateQueue is a queue storing VRAM addresses that need to be flipped on the tilemap
@@ -161,7 +215,7 @@ VBlankHandler:
 	; Check if the game is ready to process a cell grid update
 	ld a, [wCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
 	cp 0
-	jp z, .vblank_done			; If zero, we need to do nothing here
+	jp z, .update_text	; If zero, we need to do nothing here
 	
 	; Get the start of the update queue for later
 	ld a, LOW(wTileUpdateQueue)
@@ -210,11 +264,30 @@ VBlankHandler:
 	inc a 		; Move the cursor up by 1 (to match the DEC at the start of vblank, see above)
 	ld [hTileQueueCursor], a ; Save the cursor
 	cp LOW(wTileUpdateQueue) ; Is the cursor back to the starting position?
-	jp nz, .vblank_done
+	jp nz, .update_text
 	; If the cursor is back to the start position, clear the "update ready" status
 	ld a, 0
 .tile_update_done
 	ld [wCellTileMapUpdateReady], a
+.update_text
+	ld a, [wTextIndicatorNeedsUpdate]
+	cp 0
+	jp z, .vblank_done
+	; ...
+	ld a, [wTextIndication1]
+	ld h, a
+	ld a, [wTextIndication1+1]
+	ld l, a
+	ld de, $9C01
+	call DrawText
+	ld a, [wTextIndication2]
+	ld h, a
+	ld a, [wTextIndication2+1]
+	ld l, a
+	ld de, $9C01+32
+	call DrawText
+	ld a, 0
+	ld [wTextIndicatorNeedsUpdate], a
 .vblank_done
 	; Pop the registers back
 	pop hl
@@ -293,6 +366,9 @@ ClearOam:
 	ld [wPlayerCursorGridY], a
 	ld [wKillFrames], a
 	ld [wReturnToPlayerInput], a
+	ld [wTextIndicatorNeedsUpdate], a
+	ld [wTextIndication1], a
+	ld [wTextIndication2], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	; VRAM Queue cursor
@@ -335,8 +411,27 @@ clearCells:
 	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
 	call ToggleCellAtHL
 
+; Test tile on BG
+	ld e, 64
+	ld hl, $9C00
+.add_window_tile
+	ld a, 3
+	ld [hli], a
+	dec e
+	jp nz, .add_window_tile
+	nop
+; Set the Window Position
+	ld a, 128
+	ld [rWY], a
+; Draw text
+	ld hl, INPUT_INDICATION_ITERATION_01
+	ld de, $9C01
+	call DrawText
+	ld hl, INPUT_INDICATION_ITERATION_02
+	ld de, $9C01+32
+	call DrawText
 ; turn the LCD on
-	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON
+	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON | LCDCF_WINON | LCDCF_WIN9C00
 	ld [rLCDC], a
 
 ; HW interrupt code
@@ -730,6 +825,18 @@ FinishIterating:
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
 
+	; Set the text info
+	ld a, HIGH(INPUT_INDICATION_DRAW_01)
+	ld [wTextIndication1], a
+	ld a, LOW(INPUT_INDICATION_DRAW_01)
+	ld [wTextIndication1+1], a
+	ld a, HIGH(INPUT_INDICATION_DRAW_02)
+	ld [wTextIndication2], a
+	ld a, LOW(INPUT_INDICATION_DRAW_02)
+	ld [wTextIndication2+1], a
+	ld a, 1
+	ld [wTextIndicatorNeedsUpdate], a
+
 	; Add some dead input frames that will prevent some bugs between the game states
 	ld a, 2			; Probably overkill, definitely not a good way to fix this issue...
 	ld [wKillFrames], a	; Add two frames of input not registering to avoid double press issues
@@ -814,6 +921,19 @@ PlayerInputState:
 	jp z, .check_a_button; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
+
+	; Set the text info
+	ld a, HIGH(INPUT_INDICATION_ITERATION_01)
+	ld [wTextIndication1], a
+	ld a, LOW(INPUT_INDICATION_ITERATION_01)
+	ld [wTextIndication1+1], a
+	ld a, HIGH(INPUT_INDICATION_ITERATION_02)
+	ld [wTextIndication2], a
+	ld a, LOW(INPUT_INDICATION_ITERATION_02)
+	ld [wTextIndication2+1], a
+	ld a, 1
+	ld [wTextIndicatorNeedsUpdate], a
+
 	; Hide the player cursor
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
 	ld c, 0
@@ -1073,6 +1193,7 @@ ToggleCellAtHL:
 	; Set HL to a position in the tile queue
 	push hl
 	pop bc	; Move old HL into BC
+	;call AddTileToQueue
 	ld h, HIGH(wTileUpdateQueue)
 	ld a, [hTileQueueCursor]
 	ld l, a 	; HL is now the next queue address to update
@@ -1138,6 +1259,22 @@ ToggleCellAtHL:
 	ld [hl], a	; We set the changes we made back
 	ret
 	
+; Adds a tile to VRAM tilemap queue
+; BC : The tile value to add
+AddTileToQueue:
+	ld h, HIGH(wTileUpdateQueue)
+	ld a, [hTileQueueCursor]
+	ld l, a 	; HL is now the next queue address to update
+	; Add the value BC to the queue
+	ld a, b
+	ld [hli], a
+	ld a, c
+	ld [hli], a
+	; Save the cursor position for the next iteration
+	ld a, l
+	ld [hTileQueueCursor], a
+	ret
+
 ; Queues an OAM update for the next VBLANK period
 ; B	: The OAM address low part
 ; C	: The value to write down
@@ -1170,6 +1307,39 @@ QueueOamUpdate:
 	; Leave
 	pop bc
 	ret
+
+; Draws text. The start of the string must be in HL, and the position on the map at DE
+DrawText:
+	; Test for end character 255
+.draw_text_loop
+	ld a, [hl]
+	cp 255
+	jp z, .end_draw_loop
+
+	; Draw the current character
+	; 
+	ld a, [hli]
+	ld [de], a
+	inc de
+
+	; Loop
+	jp .draw_text_loop
+.end_draw_loop
+	ld a, 3
+	ld [de], a
+	inc de
+	ld [de], a
+	inc de
+	ld [de], a
+	inc de
+	ld [de], a
+	inc de
+	ld [de], a
+	inc de
+	ld [de], a
+	inc de
+	ret
+
 
 ; Useful routines
 ; Update player inputs
@@ -1256,10 +1426,15 @@ SECTION "VRAMQueue", WRAM0, ALIGN[2]
 	wTileUpdateQueue: db		; VRAM update queue (for adding tiles to the queue)
 	DS 255 				; We might need a lot of updates to be queued quickly for some GoL configurations
 	; (Note : This is also guaranteed to be alligned to XX00 since we just used 256 bytes in an alligned section
-	wOamUpdateQueue: db		; OAM update queue 
+	wOamUpdateQueue: db		; OAM update queue
 	DS 127				; Reasonable limit?
+	wWindowUpdateQueue: db		; Update queue for the Window layer. Can write tiles to it and not just toggle them
+	DS 127
 	wScrollX: db			; Camera scrolling X buffer
 	wScrollY: db			; Camera scrolling Y buffer
+	wTextIndication1: dw
+	wTextIndication2: dw
+	wTextIndicatorNeedsUpdate: db	; If 1, redraw the text
 
 SECTION "Input Variables", WRAM0
 	wCurKeys: db	; Keys that are pressed
@@ -1272,6 +1447,7 @@ SECTION "WRAM", WRAM0
 	wGridToggle: db			; Flips on and off between iterations to determine the cell buffer used
 	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
 	wOamUpdateReady: db		; 0 : Don't update object in vblank, 1: Do update objects
+	wWindowUpdateReady: db		; 
 	; Player grid input
 	wPlayerCursorGridX: db		; Grid X position of the player
 	wPlayerCursorGridY: db		; Grid Y position of the player
@@ -1285,8 +1461,16 @@ SECTION "OAM", OAM
 	oPlayerCursorId: db
 	oPlayerCursorAttr: db
 
+
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db	; Used in the game iteration routine between each byte
 	hSavedNeighboursBit7: db	; IDEM
 	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
 	hOamQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
+	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
+
+SECTION "Text", ROM0
+	INPUT_INDICATION_ITERATION_01: db "START:  Draw Mode", 255
+	INPUT_INDICATION_ITERATION_02: db "SELECT: Reset", 255
+	INPUT_INDICATION_DRAW_01: db "START:  Play", 255
+	INPUT_INDICATION_DRAW_02: db "B: Forward  A: Draw" , 255
