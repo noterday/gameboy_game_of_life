@@ -79,6 +79,7 @@ CHARMAP "W", 87
 CHARMAP "X", 88
 CHARMAP "Y", 89
 CHARMAP "Z", 90
+CHARMAP "\\", 92 
 CHARMAP ":", 124
 CHARMAP " ", 03
 
@@ -159,13 +160,6 @@ VBlankInterrupt:
 ; The VBLANK interrupt
 SECTION "VBlank Handler", ROM0
 VBlankHandler:
-	; Update keys first, if allowed to
-	ld a, [wKillFrames]
-	cp 0
-	jp z, .update_key
-	dec a
-	ld [wKillFrames], a
-	jp .update_scroll
 .update_key
 	call UpdateKeys		; Get the player input
 .update_scroll
@@ -459,8 +453,10 @@ NextState:
 	ld a, [wState]
 	cp STATE_ITERATING
 	call z, InitIterationState
+	ld a, [wState]
 	cp STATE_PLAYER_INPUT
 	call z, InitInputState
+	ld a, [wState]
 	cp STATE_MAIN_MENU
 	call z, InitTitleScreen
 
@@ -468,13 +464,38 @@ NextState:
 	ld a, [wState]
 	cp STATE_ITERATING
 	jp z, DoIterationState
+	ld a, [wState]
 	cp STATE_PLAYER_INPUT
 	jp z, DoInputState
+	ld a, [wState]
 	cp STATE_MAIN_MENU
 	jp z, DoTitleScreen
 
 
 InitIterationState:
+	ld a, [wReturnToPlayerInput]
+	cp 1
+	jp z, .ret
+	ld a, 0
+	ld [wCellTileMapUpdateReady], a
+	; Set the text info
+	ld a, HIGH(INPUT_INDICATION_ITERATION_01)
+	ld [wTextIndication1], a
+	ld a, LOW(INPUT_INDICATION_ITERATION_01)
+	ld [wTextIndication1+1], a
+	ld a, HIGH(INPUT_INDICATION_ITERATION_02)
+	ld [wTextIndication2], a
+	ld a, LOW(INPUT_INDICATION_ITERATION_02)
+	ld [wTextIndication2+1], a
+	ld a, 1
+	ld [wTextIndicatorNeedsUpdate], a
+.ret
+	ret
+
+; TODO TODO
+; 1. Fix the return values of the iteration state to make sense with the new setup (jp to itself if looping, jp to switchstate if switching
+; 2. Fix global labels in this routine that should be local (with a . in front).
+DoIterationState:
 	ld a, 0
 	ld [wKeyBuffer], a
 	; Choose a buffer to iterate
@@ -482,16 +503,11 @@ InitIterationState:
 	cp 0
 	jp nz, .choose_buffer2	 ; If not zero, use "wCells2"
 	ld hl, wCells + CELL_ROW ; If zero, use wCells
-	jp .chose_buffer
+	jp .chose_buffer_at_start
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW ; Using wCells2
-.chose_buffer
-	ret
+.chose_buffer_at_start
 
-; TODO TODO
-; 1. Fix the return values of the iteration state to make sense with the new setup (jp to itself if looping, jp to switchstate if switching
-; 2. Fix global labels in this routine that should be local (with a . in front).
-DoIterationState:
 ; Start of the iteration loop
 ; We jump here each time the GoL rule check hits a new row of bytes
 .iterate_new_row:
@@ -828,7 +844,7 @@ DoIterationState:
 	ld a, [wReturnToPlayerInput]
 	ld e, a
 	ld a, d			; Recover inputs
-	and a, INPUT_SELECT | INPUT_A | INPUT_B ; If player pressed A, B or Select
+	and a, INPUT_A | INPUT_B ; If player pressed A, B 
 	or e
 	cp 0
 	jp z, .done_checking_end_iteration_inputs
@@ -837,19 +853,6 @@ DoIterationState:
 	ld [wReturnToPlayerInput], a
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
-
-	; Set the text info
-	ld a, HIGH(INPUT_INDICATION_DRAW_01)
-	ld [wTextIndication1], a
-	ld a, LOW(INPUT_INDICATION_DRAW_01)
-	ld [wTextIndication1+1], a
-	ld a, HIGH(INPUT_INDICATION_DRAW_02)
-	ld [wTextIndication2], a
-	ld a, LOW(INPUT_INDICATION_DRAW_02)
-	ld [wTextIndication2+1], a
-	ld a, 1
-	ld [wTextIndicatorNeedsUpdate], a
-
 	; Add some dead input frames that will prevent some bugs between the game states
 	ld a, 2			; Probably overkill, definitely not a good way to fix this issue...
 	ld [wKillFrames], a	; Add two frames of input not registering to avoid double press issues
@@ -920,7 +923,6 @@ DoIterationState:
 	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
 	; Return to the start
 	jp NextState
-	
 
 
 InitInputState:
@@ -928,13 +930,13 @@ InitInputState:
 	ld a, 0
 	ld [wCellTileMapUpdateReady], a
 	; Set the text info
-	ld a, HIGH(INPUT_INDICATION_ITERATION_01)
+	ld a, HIGH(INPUT_INDICATION_DRAW_01)
 	ld [wTextIndication1], a
-	ld a, LOW(INPUT_INDICATION_ITERATION_01)
+	ld a, LOW(INPUT_INDICATION_DRAW_01)
 	ld [wTextIndication1+1], a
-	ld a, HIGH(INPUT_INDICATION_ITERATION_02)
+	ld a, HIGH(INPUT_INDICATION_DRAW_02)
 	ld [wTextIndication2], a
-	ld a, LOW(INPUT_INDICATION_ITERATION_02)
+	ld a, LOW(INPUT_INDICATION_DRAW_02)
 	ld [wTextIndication2+1], a
 	ld a, 1
 	ld [wTextIndicatorNeedsUpdate], a
@@ -1499,7 +1501,7 @@ SECTION "High Ram", HRAM
 	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
 
 SECTION "Text", ROM0
-	INPUT_INDICATION_ITERATION_01: db "START:  Draw Mode", 255
+	INPUT_INDICATION_ITERATION_01: db "A\\B:    Draw Mode", 255
 	INPUT_INDICATION_ITERATION_02: db "SELECT: Reset", 255
-	INPUT_INDICATION_DRAW_01: db "START:  Play", 255
-	INPUT_INDICATION_DRAW_02: db "B: Forward  A: Draw" , 255
+	INPUT_INDICATION_DRAW_01: db "B: Step  A: Draw" , 255
+	INPUT_INDICATION_DRAW_02: db "START:      Play", 255
