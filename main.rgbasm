@@ -8,6 +8,7 @@ DEF DOUBLE_CELL_ROW EQU 8
 ; Game states
 DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER_INPUT EQU 1
+DEF STATE_MAIN_MENU EQU 2
 
 ; Constants
 DEF SLOW_SCROLL_SPEED = 2
@@ -443,30 +444,37 @@ clearCells:
 	ldh [rIE], a
 	ei	; Turn on interrupts globally
 
-
-Main: ; The looping point for the game's main loop
-	; Check if the current state is STATE_ITERATING
-	; Check if waiting for a screen update, if so, halt
+; Switch to the game state in wState
+; Calls an init step before the state's loop
+NextState:
+	; If there is screen updates left at the start of a new state, let those finish first
 	ld a, [wCellTileMapUpdateReady]
 	cp 0
 	jp z, .done_waiting
 	halt	; Wait and do nothing
-	jp Main
+	jp NextState
 .done_waiting
-	; Pick a game state
+
+	; Call the init routine
 	ld a, [wState]
 	cp STATE_ITERATING
-	jp z, IteratingState
+	call z, InitIterationState
 	cp STATE_PLAYER_INPUT
-	jp z, PlayerInputState 
+	call z, InitInputState
+	cp STATE_MAIN_MENU
+	call z, InitTitleScreen
 
-	; Do nothing if somehow not in any state (shouldn't happen)
-	halt
-	jp Main
+	; Call the loop
+	ld a, [wState]
+	cp STATE_ITERATING
+	jp z, DoIterationState
+	cp STATE_PLAYER_INPUT
+	jp z, DoInputState
+	cp STATE_MAIN_MENU
+	jp z, DoTitleScreen
 
-; Game state for the game of life iterations
-; This will process a full iteration of the cell grid before taking inputs
-IteratingState:
+
+InitIterationState:
 	ld a, 0
 	ld [wKeyBuffer], a
 	; Choose a buffer to iterate
@@ -478,10 +486,15 @@ IteratingState:
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW ; Using wCells2
 .chose_buffer
+	ret
 
+; TODO TODO
+; 1. Fix the return values of the iteration state to make sense with the new setup (jp to itself if looping, jp to switchstate if switching
+; 2. Fix global labels in this routine that should be local (with a . in front).
+DoIterationState:
 ; Start of the iteration loop
 ; We jump here each time the GoL rule check hits a new row of bytes
-IterateNewRow:
+.iterate_new_row:
 	ld a, 0
 	ld b, a ; Clear the middle byte
 	ld d, a ; Clear the top byte
@@ -489,7 +502,7 @@ IterateNewRow:
 	ld [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
 	ld [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
 ; We jump here each time the GoL rule check loads a new byte, in the same row
-SetupNewIteratedByte:
+.setup_new_iterated_byte:
 	push hl		; We save HL for later
 	ld b, [hl]	; The current byte is now in B
 	; Move HL to point to the bottom byte
@@ -525,10 +538,10 @@ SetupNewIteratedByte:
 ; HL : The equivalent in memory to our current address in the other buffer
 	 
 ; Finishing bit 0 of the previous loop
-Bit0Check:
+.bit0_check:
 	ld a, l			; We check if at start of row, to skip this part
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	jp z, Bit7Check		; Skip this step if this is the start of a row
+	jp z, .bit7_check		; Skip this step if this is the start of a row
 	ldh a, [hSavedNeighboursBit0]
 	ld c, a ; Load the previous C
 	check_neighbour_bit 7, d ; Top-Right bit
@@ -541,7 +554,7 @@ Bit0Check:
 	; That byte needs to be cleaned up and updated
 	inc l	; We get back to the current byte
 
-Bit7Check:
+.bit7_check:
 	; Bit 7 Checks (started using the previous d,b,e values earlier)
 	; Top
 	ldh a, [hSavedNeighboursBit7]
@@ -553,7 +566,7 @@ Bit7Check:
 	check_neighbour_bit 6, b ; Right bit
 	check_neighbour_bit 6, e ; Bottom bit
 	game_of_life_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
-Bit6to1Check:
+.bit6to1_check:
 	; Bit 6 checks
 	ld c, 0 ; Clear C
 	; Left
@@ -672,7 +685,7 @@ Bit6to1Check:
 	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
 
 ; Setup the next memory address in HL
-GetNextByte:
+.get_next_byte:
 	; At this stage, changes for the current byte have already been written into it's mirror buffer
 	; We need to find what has changed by comparing both buffers (with a XOR),
 	; to find every graphical tile update we need to do.
@@ -728,22 +741,22 @@ GetNextByte:
 	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte from the size to test if we are done
 	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
 	cp 0
-	jp nz, .using_buffer2		;
+	jp nz, .use_buffer2		;
 	ld a, l ; We will check if we are at the final byte or a row's end
 	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
-	jp z, FinishIterating			; If we are done, we exit the loop
+	jp z, .finish_iterating			; If we are done, we exit the loop
 	jp .done_testing_if_done
-.using_buffer2:
+.use_buffer2:
 	ld a, l ; We will check if we are at the final byte or a row's end
 	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
-	jp z, FinishIterating			; If we are done, we exit the loop
+	jp z, .finish_iterating			; If we are done, we exit the loop
 .done_testing_if_done:
 	; We jump to the new row looping point if (HL modulo 4) is 0, to clear extra registers
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
 	nop
-	jp z, IterateNewRow	; Jump to the new row code, which clears the b,d,e registers
-	jp SetupNewIteratedByte	; Iterate over the next byte if we didn't exit and didn't jump to a new row
-FinishIterating:
+	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
+	jp .setup_new_iterated_byte; Iterate over the next byte if we didn't exit and didn't jump to a new row
+.finish_iterating:
 	; Process player inputs
 	; Check for camera scrolling
 	ld a, [wScrollX]	
@@ -906,22 +919,14 @@ FinishIterating:
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
 	; Return to the start
-	jp Main					
+	jp NextState
+	
 
 
-; Start if state is STATE_PLAYER_INPUT
-PlayerInputState:
+InitInputState:
 	; Prevent cell update temporarily
 	ld a, 0
 	ld [wCellTileMapUpdateReady], a
-	; If player presses "start", return to iteration
-	ld a, [wNewKeys]	; Get the "just pressed" inputs
-	ld d, a			; Load just pressed inputs into C to save them close by
-	and a, INPUT_START	; Check for "Start" first
-	jp z, .check_a_button; If start is not pressed, skip start processing
-	ld a, STATE_ITERATING 
-	ld [wState], a			; Return to the iteration state
-
 	; Set the text info
 	ld a, HIGH(INPUT_INDICATION_ITERATION_01)
 	ld [wTextIndication1], a
@@ -934,6 +939,17 @@ PlayerInputState:
 	ld a, 1
 	ld [wTextIndicatorNeedsUpdate], a
 
+	ret
+
+DoInputState:
+.check_start_button:
+	; If player presses "start", return to iteration
+	ld a, [wNewKeys]	; Get the "just pressed" inputs
+	ld d, a			; Load just pressed inputs into C to save them close by
+	and a, INPUT_START	; Check for "Start" first
+	jp z, .check_a_button	; If start is not pressed, skip start processing
+	ld a, STATE_ITERATING 
+	ld [wState], a			; Return to the iteration state
 	; Hide the player cursor
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
 	ld c, 0
@@ -1086,8 +1102,6 @@ PlayerInputState:
 	ld a, [wScrollX]
 	add 8
 	ld [wScrollX], a
-
-	nop
 .update_sprite_position
 	; Offset the sprite if the camera is not grid alligned
 	ld a, [rSCX]
@@ -1125,7 +1139,21 @@ PlayerInputState:
 	call QueueOamUpdate
 
 	halt	; Wait till end of frame
-	jp Main
+	jp NextState
+
+InitTitleScreen:
+	ret
+
+DoTitleScreen:
+	nop
+	; Just exit out right now. TODO: Input and logic and cursor
+	ld a, STATE_ITERATING
+	ld [wState], a
+	;jp DoTitleScreen
+	jp NextState
+
+
+; SECTION : Drawing routines
 
 ; Updates the GoL cell at the player cursor coordinates
 ; The only action we support is toggling a cell
@@ -1341,7 +1369,8 @@ DrawText:
 	ret
 
 
-; Useful routines
+; Other useful routines
+
 ; Update player inputs
 ; Sets 'wNewKeys' to keys just pressed the current frame
 ; Sets 'wCurKeys' to keys currently being held
