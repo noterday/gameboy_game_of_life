@@ -82,6 +82,8 @@ CHARMAP "Z", 90
 CHARMAP "\\", 92 
 CHARMAP ":", 124
 CHARMAP " ", 03
+CHARMAP "=", 04
+CHARMAP ">", 05
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
@@ -273,13 +275,13 @@ VBlankHandler:
 	ld h, a
 	ld a, [wTextIndication1+1]
 	ld l, a
-	ld de, $9C01
+	ld de, $9C00
 	call DrawText
 	ld a, [wTextIndication2]
 	ld h, a
 	ld a, [wTextIndication2+1]
 	ld l, a
-	ld de, $9C01+32
+	ld de, $9C00+32
 	call DrawText
 	ld a, 0
 	ld [wTextIndicatorNeedsUpdate], a
@@ -406,7 +408,7 @@ clearCells:
 	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
 	call ToggleCellAtHL
 
-; Test tile on BG
+; Tile on BG
 	ld e, 64
 	ld hl, $9C00
 .add_window_tile
@@ -418,12 +420,14 @@ clearCells:
 ; Set the Window Position
 	ld a, 128
 	ld [rWY], a
+	ld a, 7
+	ld [rWX], a
 ; Draw text
 	ld hl, INPUT_INDICATION_ITERATION_01
-	ld de, $9C01
+	ld de, $9C00
 	call DrawText
 	ld hl, INPUT_INDICATION_ITERATION_02
-	ld de, $9C01+32
+	ld de, $9C00+32
 	call DrawText
 ; turn the LCD on
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON | LCDCF_WINON | LCDCF_WIN9C00
@@ -492,9 +496,6 @@ InitIterationState:
 .ret
 	ret
 
-; TODO TODO
-; 1. Fix the return values of the iteration state to make sense with the new setup (jp to itself if looping, jp to switchstate if switching
-; 2. Fix global labels in this routine that should be local (with a . in front).
 DoIterationState:
 	ld a, 0
 	ld [wKeyBuffer], a
@@ -781,6 +782,7 @@ DoIterationState:
 	ld c, a			; Camera Y in C register
 	ld a, [wKeyBuffer]	; Keys since the start of the iteration state (when the buffer was last cleared"
 	ld d, a			; Saving the current keys in D register
+.handle_iteration_inputs
 	; Choose the speed of scrolling based on how many frame the key was held
 	ld a, [wKeyRepeatFrameCount]
 	cp FAST_SCROLL_TIMER 
@@ -832,27 +834,62 @@ DoIterationState:
 .check_right
 	ld a, d			; Recover inputs
 	and a, INPUT_RIGHT
-	jp z, .check_other_buttons
+	jp z, .check_input_state_buttons
 	; Scroll right
 	ld a, b
 	cp 96	; How large you can go without camera looping left
-	jp nc, .check_other_buttons	; Skip scrolling if you hit the right limit
+	jp nc, .check_input_state_buttons	; Skip scrolling if you hit the right limit
 	add e
 	ld [wScrollX], a
-.check_other_buttons
+.check_input_state_buttons:
 	; Check for buttons, or the "return" variable triggered by a B button press in player input state
-	ld a, [wReturnToPlayerInput]
+	ld a, [wReturnToPlayerInput] ; This stores the bool that tells us to
 	ld e, a
 	ld a, d			; Recover inputs
 	and a, INPUT_A | INPUT_B ; If player pressed A, B 
 	or e
 	cp 0
-	jp z, .done_checking_end_iteration_inputs
+	jp z, .check_select_button
 	; Go into player input state
 	ld a, 0
 	ld [wReturnToPlayerInput], a
 	ld a, STATE_PLAYER_INPUT
 	ld [wState], a
+.check_select_button:
+	ld a, d		; Recover inputs
+	and a, INPUT_SELECT
+	jp z, .done_checking_end_iteration_inputs
+	ld a, STATE_MAIN_MENU
+	ld [wState], a
+.done_checking_end_iteration_inputs:
+	; End of iteration processing
+	; Swap which buffer is written to
+	ld a, [wGridToggle]
+	cpl a					; Flip wGridToggle to iterate the other buffer now
+	ld [wGridToggle], a
+	; Tell the VBlank interrupt that a screen update is needed
+	ld a, 1
+	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
+	; Return to the start
+	jp NextState
+
+
+InitInputState:
+	; Prevent cell update temporarily
+	ld a, 0
+	ld [wCellTileMapUpdateReady], a
+	; Set the text info
+	ld a, HIGH(INPUT_INDICATION_DRAW_01)
+	ld [wTextIndication1], a
+	ld a, LOW(INPUT_INDICATION_DRAW_01)
+	ld [wTextIndication1+1], a
+	ld a, HIGH(INPUT_INDICATION_DRAW_02)
+	ld [wTextIndication2], a
+	ld a, LOW(INPUT_INDICATION_DRAW_02)
+	ld [wTextIndication2+1], a
+	ld a, 1
+	ld [wTextIndicatorNeedsUpdate], a
+
 	; Add some dead input frames that will prevent some bugs between the game states
 	ld a, 2			; Probably overkill, definitely not a good way to fix this issue...
 	ld [wKillFrames], a	; Add two frames of input not registering to avoid double press issues
@@ -894,7 +931,7 @@ DoIterationState:
 	jp .cursor_adjust_needed
 .cursor_adjust_down
 	cp e
-	jp c, .done_checking_end_iteration_inputs
+	jp c, .ret
 	jp .cursor_adjust_needed
 .cursor_adjust_needed
 	; Get the coordinates at the center of the screen
@@ -912,35 +949,7 @@ DoIterationState:
 	rrca
 	add 8
 	ld [wPlayerCursorGridY], a
-.done_checking_end_iteration_inputs
-	; End of iteration processing
-	; Swap which buffer is written to
-	ld a, [wGridToggle]
-	cpl a					; Flip wGridToggle to iterate the other buffer now
-	ld [wGridToggle], a
-	; Tell the VBlank interrupt that a screen update is needed
-	ld a, 1
-	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
-	; Return to the start
-	jp NextState
-
-
-InitInputState:
-	; Prevent cell update temporarily
-	ld a, 0
-	ld [wCellTileMapUpdateReady], a
-	; Set the text info
-	ld a, HIGH(INPUT_INDICATION_DRAW_01)
-	ld [wTextIndication1], a
-	ld a, LOW(INPUT_INDICATION_DRAW_01)
-	ld [wTextIndication1+1], a
-	ld a, HIGH(INPUT_INDICATION_DRAW_02)
-	ld [wTextIndication2], a
-	ld a, LOW(INPUT_INDICATION_DRAW_02)
-	ld [wTextIndication2+1], a
-	ld a, 1
-	ld [wTextIndicatorNeedsUpdate], a
-
+.ret
 	ret
 
 DoInputState:
@@ -949,9 +958,20 @@ DoInputState:
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld d, a			; Load just pressed inputs into C to save them close by
 	and a, INPUT_START	; Check for "Start" first
-	jp z, .check_a_button	; If start is not pressed, skip start processing
+	jp z, .check_select_button	; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
+	; Hide the player cursor
+	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
+	ld c, 0
+	call QueueOamUpdate
+	jp .done_input_processing	; Don't check any other input if returning to iteration
+.check_select_button:
+	ld a, d
+	and a, INPUT_SELECT
+	jp z, .check_a_button
+	ld a, STATE_MAIN_MENU
+	ld [wState], a
 	; Hide the player cursor
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
 	ld c, 0
@@ -1501,7 +1521,7 @@ SECTION "High Ram", HRAM
 	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
 
 SECTION "Text", ROM0
-	INPUT_INDICATION_ITERATION_01: db "A\\B:    Draw Mode", 255
-	INPUT_INDICATION_ITERATION_02: db "SELECT: Reset", 255
-	INPUT_INDICATION_DRAW_01: db "B: Step  A: Draw" , 255
-	INPUT_INDICATION_DRAW_02: db "START:      Play", 255
+	INPUT_INDICATION_ITERATION_01: db "> A\\B:    Draw Mode", 255
+	INPUT_INDICATION_ITERATION_02: db "  SELECT: Reset", 255
+	INPUT_INDICATION_DRAW_01: db "= B: Step  A: Draw" , 255
+	INPUT_INDICATION_DRAW_02: db "  START:      Play", 255
