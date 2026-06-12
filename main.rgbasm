@@ -86,13 +86,19 @@ CHARMAP "=", 04
 CHARMAP ">", 05
 
 
-MACRO turn_screen_off_safely
-; Don't turn off the lcd outside of VBlank
+MACRO wait_for_vblank
 .wait_first_vblank\@:
 	ld a, [rLY]
 	cp 144
 	jp c, .wait_first_vblank\@
-	; Turn the LCD off.
+ENDM
+	
+
+
+MACRO turn_screen_off_safely
+	wait_for_vblank
+; Don't turn off the lcd outside of VBlank
+; Turn the LCD off.
 	ld a, 0
 	ld [rLCDC], a
 ENDM
@@ -388,17 +394,37 @@ ClearOam:
 	ei	; Turn on interrupts globally
 	jp NextState
 
-; Switch to the game state in wState
-; Calls an init step before the state's loop
-NextState:
-	; If there is screen updates left at the start of a new state, let those finish first
+
+WaitForScreenUpdate:
+.wait
 	ld a, [wCellTileMapUpdateReady]
 	cp 0
 	jp z, .done_waiting
 	halt	; Wait and do nothing
-	jp NextState
+	jp .wait
 .done_waiting
+	ret
 
+
+; Switch to the game state in wState
+; Calls an init step before the state's loop
+NextState:
+	; If there is screen updates left at the start of a new state, let those finish first
+	call WaitForScreenUpdate
+	ld a, 1
+	ld [wWaitingForKeyRelease], a
+	; Kill a frame always
+	wait_for_vblank
+	ld a, [wWaitingForKeyRelease]
+	cp 1
+	jp nz, .switch_state
+	ld a, [wCurKeys]
+	cp 0
+	jp z, .switch_state
+	halt
+	jp NextState
+
+.switch_state
 	; Call the init routine
 	ld a, [wState]
 	cp STATE_ITERATING
@@ -430,17 +456,18 @@ InitVariables:
 	ld [wNewKeys], a
 	ld [wKeyBuffer], a
 	ld [wKeyRepeatFrameCount], a
+	ld [wWaitingForKeyRelease], a
 	ld [wGridToggle], a
 	ld [wCellTileMapUpdateReady], a
 	ld [wScrollX], a
 	ld [wScrollY], a
 	ld [wPlayerCursorGridX], a
 	ld [wPlayerCursorGridY], a
-	ld [wKillFrames], a
 	ld [wReturnToPlayerInput], a
 	ld [wTextIndicatorNeedsUpdate], a
 	ld [wTextIndication1], a
 	ld [wTextIndication2], a
+	ld [wVerticalMenuCursorIndex], a
 	ld a, 1
 	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
 	ld a, STATE_TITLE_SCREEN
@@ -523,6 +550,7 @@ InitIterationState:
 	ret
 
 DoIterationState:
+	call WaitForScreenUpdate
 	ld a, 0
 	ld [wKeyBuffer], a
 	; Choose a buffer to iterate
@@ -896,8 +924,12 @@ DoIterationState:
 	; Tell the VBlank interrupt that a screen update is needed
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a	; Tell VBlank routine that it can now update tiles
-	; Return to the start
-	jp NextState
+	; Jump to the next state if state changed
+	ld a, [wState]
+	cp STATE_ITERATING
+	jp nz, NextState
+	; Return to the start if not
+	jp DoIterationState
 
 
 InitInputState:
@@ -916,9 +948,6 @@ InitInputState:
 	ld a, 1
 	ld [wTextIndicatorNeedsUpdate], a
 
-	; Add some dead input frames that will prevent some bugs between the game states
-	ld a, 2			; Probably overkill, definitely not a good way to fix this issue...
-	ld [wKillFrames], a	; Add two frames of input not registering to avoid double press issues
 	; Prepare the player cursor by recentering it if off screen 
 	ld a, 0
 	ld b, a		; The B register will be set to 1 if the cursor is outside the camera bounds
@@ -979,6 +1008,8 @@ InitInputState:
 	ret
 
 DoInputState:
+	; Wait for the screen to be cleared up
+	call WaitForScreenUpdate
 .check_start_button:
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
@@ -1214,7 +1245,9 @@ InitTitleScreen:
 ; Write default variable values
 	call InitVariables
 	call ClearTilemap
-	call ClearCellsSquare
+
+;2. Draw the menu options on screen (TODO)
+	nop
 
 ; turn the LCD on
 	turn_screen_on
@@ -1222,12 +1255,39 @@ InitTitleScreen:
 
 
 DoTitleScreen:
+	; 3. Check player input for up and down arrow, and move the cursor accordingly
+	;	3.1. If the cursor variable moved, redraw the cursor obj position
+	ld a, [wNewKeys]
+	cp INPUT_UP
+	jp z, .move_cursor_up
+	cp INPUT_DOWN
+	jp z, .move_cursor_down
+	cp INPUT_A
+	jp z, .select_option
+	cp INPUT_START
+	jp z, .select_option
+
+.move_cursor_up:
 	nop
-	; Just exit out right now. TODO: Input and logic and cursor
+	jp .waiting
+.move_cursor_down:
+	nop
+	jp .waiting
+.select_option:
+	; TODO: 
+	; 4. If A or start is pressed, use the current cursor position as the choice to jump to a game init routine
+	;	4.1 To start, make the menu have two options, Empty and Square
+	; Just exit out right now.
+	call ClearCellsSquare
 	ld a, STATE_ITERATING
 	ld [wState], a
-	;jp DoTitleScreen
 	jp NextState
+	;jp NextState
+
+	; Loop on yourself to test input next frame, if no exit happened
+.waiting
+	halt
+	jp DoTitleScreen
 
 
 ; SECTION : Drawing routines
@@ -1547,18 +1607,21 @@ SECTION "Input Variables", WRAM0
 	wNewKeys: db	; Keys that are "just pressed", this current frame
 	wKeyBuffer: db	; Keys that have been pressed since the last time "wKeyBuffer" was cleared to 0. In case it takes multiple frames to process inputs.
 	wKeyRepeatFrameCount: db	; How many frames has the same key combination been pressed?
+	wWaitingForKeyRelease: db	; If set to 1, must wait until CurKey is 0 to do any input again
 
 SECTION "WRAM", WRAM0
 	wState: db ; 0 == Iterating GOL and drawing , 1 == player input
 	wGridToggle: db			; Flips on and off between iterations to determine the cell buffer used
+	; VBlank update request variable
 	wCellTileMapUpdateReady: db	; 0 : Not ready to update the cell grid. 1: Ready to update the cell grid on tilemap
 	wOamUpdateReady: db		; 0 : Don't update object in vblank, 1: Do update objects
-	wWindowUpdateReady: db		; 
+	wWindowUpdateReady: db		; 0 : Don't update the Window, 1: Update the window
 	; Player grid input
 	wPlayerCursorGridX: db		; Grid X position of the player
 	wPlayerCursorGridY: db		; Grid Y position of the player
-	wKillFrames: db			; Frames to waste doing nothing inside the player input state. To prevent input issues
 	wReturnToPlayerInput: db	; If set to 1, the game will go to player input state at the end of iteration
+	; Menu variables
+	wVerticalMenuCursorIndex: db	; The index in a vertical menu
 
 SECTION "OAM", OAM
 	; Player cursor values
@@ -1566,7 +1629,6 @@ SECTION "OAM", OAM
 	oPlayerCursorX: db
 	oPlayerCursorId: db
 	oPlayerCursorAttr: db
-
 
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db	; Used in the game iteration routine between each byte
