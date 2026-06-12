@@ -8,7 +8,7 @@ DEF DOUBLE_CELL_ROW EQU 8
 ; Game states
 DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER_INPUT EQU 1
-DEF STATE_MAIN_MENU EQU 2
+DEF STATE_TITLE_SCREEN EQU 2
 
 ; Constants
 DEF SLOW_SCROLL_SPEED = 2
@@ -84,6 +84,27 @@ CHARMAP ":", 124
 CHARMAP " ", 03
 CHARMAP "=", 04
 CHARMAP ">", 05
+
+
+MACRO turn_screen_off_safely
+; Don't turn off the lcd outside of VBlank
+.wait_first_vblank\@:
+	ld a, [rLY]
+	cp 144
+	jp c, .wait_first_vblank\@
+	; Turn the LCD off.
+	ld a, 0
+	ld [rLCDC], a
+ENDM
+
+
+MACRO turn_screen_on
+; Don't turn on the lcd outside of VBlank
+	; Turn the LCD back on with the wanted flags
+	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON | LCDCF_WINON | LCDCF_WIN9C00
+	ld [rLCDC], a
+ENDM
+
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
@@ -298,16 +319,9 @@ SECTION "Header", ROM0[$100]
 	jp EntryPoint
 	ds $150 - @, 0 ; make room for the header
 
-EntryPoint:
-	; don't turn off the lcd outside of VBlank
-WaitFirstVBlank:
-	ld a, [rLY]
-	cp 144
-	jp c, WaitFirstVBlank
-; Turn the LCD off. the screen must be off to safely access VRAM and OAM
-	ld a, 0
-	ld [rLCDC], a
 
+EntryPoint:
+	turn_screen_off_safely
 ; Copy tiles in object section
 	ld de, Tiles            ; source in ROM
 	ld hl, _VRAM8000        ; dest in VRAM
@@ -341,73 +355,13 @@ ClearOam:
 	ld [hli], a
 
 
-; init palette display registers
+; Init palette display registers
 	ld a, %11100100
 	ld b, 0
 	ld [rBGP], a
 	ld [rOBP0], a
-
-; Init other variables
-	; Stuff we init to 0
-	ld a, 0
-	ld [wCurKeys], a
-	ld [wNewKeys], a
-	ld [wKeyBuffer], a
-	ld [wKeyRepeatFrameCount], a
-	ld [wState], a
-	ld [wGridToggle], a
-	ld [wCellTileMapUpdateReady], a
-	ld [wScrollX], a
-	ld [wScrollY], a
-	ld [wPlayerCursorGridX], a
-	ld [wPlayerCursorGridY], a
-	ld [wKillFrames], a
-	ld [wReturnToPlayerInput], a
-	ld [wTextIndicatorNeedsUpdate], a
-	ld [wTextIndication1], a
-	ld [wTextIndication2], a
-	ld a, 1
-	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
-	; VRAM Queue cursor
-	ld a, LOW(wTileUpdateQueue)
-	ld [hTileQueueCursor], a
-	; VRAM OAM Queue cursor
-	ld a, LOW(wOamUpdateQueue)
-	ld [hOamQueueCursor], a
-
-; Zero out the cells
-	ld b, 0
-	ld hl, wCells 
-clearCells:
-	ld a, 0
-	ld [hli], a
-	;inc b
-	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
-	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
-	jp nz, clearCells; If not done, loop
-
-; Some Debug stuff for testing cells
-; We set different values in the 8x3 block of cells in the top right corner
-	; 3 bits on row 4, starting at 8
-	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+0
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+1
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
-	call ToggleCellAtHL
-	; 2 bits on row 5, starting at 8
-	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+0
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+2
-	call ToggleCellAtHL
-	; 3 bits on row 6, starting at 8
-	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+0
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+1
-	call ToggleCellAtHL
-	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
-	call ToggleCellAtHL
-
+; Init variables
+	call InitVariables
 ; Tile on BG
 	ld e, 64
 	ld hl, $9C00
@@ -422,17 +376,8 @@ clearCells:
 	ld [rWY], a
 	ld a, 7
 	ld [rWX], a
-; Draw text
-	ld hl, INPUT_INDICATION_ITERATION_01
-	ld de, $9C00
-	call DrawText
-	ld hl, INPUT_INDICATION_ITERATION_02
-	ld de, $9C00+32
-	call DrawText
 ; turn the LCD on
-	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON | LCDCF_WINON | LCDCF_WIN9C00
-	ld [rLCDC], a
-
+	turn_screen_on
 ; HW interrupt code
 	; Clear interrupt flags
 	ld a, 0
@@ -441,6 +386,7 @@ clearCells:
 	ld a, IEF_VBLANK
 	ldh [rIE], a
 	ei	; Turn on interrupts globally
+	jp NextState
 
 ; Switch to the game state in wState
 ; Calls an init step before the state's loop
@@ -461,7 +407,7 @@ NextState:
 	cp STATE_PLAYER_INPUT
 	call z, InitInputState
 	ld a, [wState]
-	cp STATE_MAIN_MENU
+	cp STATE_TITLE_SCREEN
 	call z, InitTitleScreen
 
 	; Call the loop
@@ -472,8 +418,88 @@ NextState:
 	cp STATE_PLAYER_INPUT
 	jp z, DoInputState
 	ld a, [wState]
-	cp STATE_MAIN_MENU
+	cp STATE_TITLE_SCREEN
 	jp z, DoTitleScreen
+
+
+; Init other variables
+InitVariables:
+	; Stuff we init to 0
+	ld a, 0
+	ld [wCurKeys], a
+	ld [wNewKeys], a
+	ld [wKeyBuffer], a
+	ld [wKeyRepeatFrameCount], a
+	ld [wGridToggle], a
+	ld [wCellTileMapUpdateReady], a
+	ld [wScrollX], a
+	ld [wScrollY], a
+	ld [wPlayerCursorGridX], a
+	ld [wPlayerCursorGridY], a
+	ld [wKillFrames], a
+	ld [wReturnToPlayerInput], a
+	ld [wTextIndicatorNeedsUpdate], a
+	ld [wTextIndication1], a
+	ld [wTextIndication2], a
+	ld a, 1
+	ld [wOamUpdateReady], a	; This is on by default, we turn it off while updating a value
+	ld a, STATE_TITLE_SCREEN
+	ld [wState], a
+	; VRAM Queue cursor
+	ld a, LOW(wTileUpdateQueue)
+	ld [hTileQueueCursor], a
+	; VRAM OAM Queue cursor
+	ld a, LOW(wOamUpdateQueue)
+	ld [hOamQueueCursor], a
+	ret
+
+ClearTilemap:
+	; Zero out $9800 to $9FFF
+	ld hl, $9800
+.loop
+	ld a, 0
+	ld [hli], a
+	ld a, h
+	cp $A0 ; If we just went pas 9FFF, then H will be A0 for the first time
+	jp nz, .loop
+	ret
+
+
+ClearCellsEmpty:
+; Zero out the cells
+	ld hl, wCells 
+.clearCells:
+	ld a, 0
+	ld [hli], a
+	;inc b
+	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
+	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
+	jp nz, .clearCells; If not done, loop
+	ret
+
+
+ClearCellsSquare:
+	call ClearCellsEmpty
+	; 3 bits on row 4, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+2
+	call ToggleCellAtHL
+	; 2 bits on row 5, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+2
+	call ToggleCellAtHL
+	; 3 bits on row 6, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
+	call ToggleCellAtHL
+	ret
 
 
 InitIterationState:
@@ -859,7 +885,7 @@ DoIterationState:
 	ld a, d		; Recover inputs
 	and a, INPUT_SELECT
 	jp z, .done_checking_end_iteration_inputs
-	ld a, STATE_MAIN_MENU
+	ld a, STATE_TITLE_SCREEN
 	ld [wState], a
 .done_checking_end_iteration_inputs:
 	; End of iteration processing
@@ -970,7 +996,7 @@ DoInputState:
 	ld a, d
 	and a, INPUT_SELECT
 	jp z, .check_a_button
-	ld a, STATE_MAIN_MENU
+	ld a, STATE_TITLE_SCREEN
 	ld [wState], a
 	; Hide the player cursor
 	ld b, LOW(oPlayerCursorId)	; Load the address of the cursor Id
@@ -1163,8 +1189,37 @@ DoInputState:
 	halt	; Wait till end of frame
 	jp NextState
 
+
 InitTitleScreen:
+	turn_screen_off_safely	
+	; Clearing OAM
+	ld a, 0        ; value to write to bytes
+	ld b, 160      ; # of bytes to write
+	ld hl, _OAMRAM ; dest
+.clear_oam:
+	ld [hli], a
+	dec b
+	jp nz, .clear_oam
+; Write objects
+	; Cursor
+	ld hl, oPlayerCursorY
+	ld a, 16 ; Y
+	ld [hli], a
+	ld a, 8 ; X
+	ld [hli], a
+	ld a, 0	; ID
+	ld [hli], a
+	ld a, 0 ; Attributes
+	ld [hli], a
+; Write default variable values
+	call InitVariables
+	call ClearTilemap
+	call ClearCellsSquare
+
+; turn the LCD on
+	turn_screen_on
 	ret
+
 
 DoTitleScreen:
 	nop
