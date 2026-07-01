@@ -84,6 +84,18 @@ CHARMAP ":", 124
 CHARMAP " ", 03
 CHARMAP "=", 04
 CHARMAP ">", 05
+CHARMAP ".", 03
+CHARMAP "0", 03
+CHARMAP "1", 03
+CHARMAP "2", 03
+CHARMAP "3", 03
+CHARMAP "4", 03
+CHARMAP "5", 03
+CHARMAP "6", 03
+CHARMAP "7", 03
+CHARMAP "8", 03
+CHARMAP "9", 03
+
 
 
 MACRO wait_for_vblank
@@ -397,10 +409,10 @@ ClearOam:
 
 WaitForScreenUpdate:
 .wait
+	halt	; Wait and do nothing
 	ld a, [wCellTileMapUpdateReady]
 	cp 0
 	jp z, .done_waiting
-	halt	; Wait and do nothing
 	jp .wait
 .done_waiting
 	ret
@@ -1217,8 +1229,11 @@ DoInputState:
 	ld c, 2
 	call QueueOamUpdate
 
-	halt	; Wait till end of frame
-	jp NextState
+	ld a, [wState]
+	cp STATE_PLAYER_INPUT
+	jp nz, NextState
+	; Return to the start if not
+	jp DoInputState
 
 
 InitTitleScreen:
@@ -1248,6 +1263,13 @@ InitTitleScreen:
 
 ;2. Draw the menu options on screen (TODO)
 	nop
+	; text add in hl, position in de
+	ld a, [TITLE_MENU_01]
+	ld h, a
+	ld a, [TITLE_MENU_01+1]
+	ld l, a
+	ld de, $9C00
+	call DrawText
 
 ; turn the LCD on
 	turn_screen_on
@@ -1474,6 +1496,7 @@ QueueOamUpdate:
 	ret
 
 ; Draws text. The start of the string must be in HL, and the position on the map at DE
+; Text is drawn immediately?
 DrawText:
 	; Test for end character 255
 .draw_text_loop
@@ -1490,6 +1513,7 @@ DrawText:
 	; Loop
 	jp .draw_text_loop
 .end_draw_loop
+	; Erase some character at the end (messy way to clear a line?)
 	ld a, 3
 	ld [de], a
 	inc de
@@ -1642,3 +1666,5 @@ SECTION "Text", ROM0
 	INPUT_INDICATION_ITERATION_02: db "  SELECT: Reset", 255
 	INPUT_INDICATION_DRAW_01: db "= B: Step  A: Draw" , 255
 	INPUT_INDICATION_DRAW_02: db "  START:      Play", 255
+	TITLE_MENU_01: db "01. Empty Grid", 255
+	TITLE_MENU_02: db "02. Square", 255
