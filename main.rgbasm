@@ -16,6 +16,8 @@ DEF FAST_SCROLL_SPEED = 5
 DEF FAST_SCROLL_TIMER = 25
 DEF KEY_REPEAT_DELAY = 8
 
+DEF NUMBER_OF_MENU_OPTIONS = 2
+
 ; Inputs
 DEF INPUT_DOWN =	%10000000
 DEF INPUT_UP =		%01000000
@@ -84,17 +86,7 @@ CHARMAP ":", 124
 CHARMAP " ", 03
 CHARMAP "=", 04
 CHARMAP ">", 05
-CHARMAP ".", 03
-CHARMAP "0", 03
-CHARMAP "1", 03
-CHARMAP "2", 03
-CHARMAP "3", 03
-CHARMAP "4", 03
-CHARMAP "5", 03
-CHARMAP "6", 03
-CHARMAP "7", 03
-CHARMAP "8", 03
-CHARMAP "9", 03
+CHARMAP ".", 128
 
 
 
@@ -351,27 +343,6 @@ EntryPoint:
 	ld hl, _VRAM9000        ; dest in VRAM
 	ld bc, TilesEnd - Tiles ; # of bytes (pixel data) remaining
 	call Memcopy
-
-; Clearing OAM
-	ld a, 0        ; value to write to bytes
-	ld b, 160      ; # of bytes to write
-	ld hl, _OAMRAM ; dest
-ClearOam:
-	ld [hli], a
-	dec b
-	jp nz, ClearOam
-; Write objects
-	; Cursor
-	ld hl, oPlayerCursorY
-	ld a, 16 ; Y
-	ld [hli], a
-	ld a, 8 ; X
-	ld [hli], a
-	ld a, 0	; ID
-	ld [hli], a
-	ld a, 0 ; Attributes
-	ld [hli], a
-
 
 ; Init palette display registers
 	ld a, %11100100
@@ -1019,9 +990,13 @@ InitInputState:
 .ret
 	ret
 
+
 DoInputState:
 	; Wait for the screen to be cleared up
 	call WaitForScreenUpdate
+	nop
+	nop
+	nop
 .check_start_button:
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
@@ -1242,10 +1217,10 @@ InitTitleScreen:
 	ld a, 0        ; value to write to bytes
 	ld b, 160      ; # of bytes to write
 	ld hl, _OAMRAM ; dest
-.clear_oam:
+.ClearOam:
 	ld [hli], a
 	dec b
-	jp nz, .clear_oam
+	jp nz, .ClearOam
 ; Write objects
 	; Cursor
 	ld hl, oPlayerCursorY
@@ -1257,18 +1232,33 @@ InitTitleScreen:
 	ld [hli], a
 	ld a, 0 ; Attributes
 	ld [hli], a
+	; Menu cursor
+	ld hl, oMenuCursorY
+	ld a, 48
+	ld [hli], a
+	ld a, 32
+	ld [hli], a
+	ld a, 5
+	ld [hli], a
 ; Write default variable values
 	call InitVariables
 	call ClearTilemap
 
-;2. Draw the menu options on screen (TODO)
+;2. Draw the menu options on screen
 	nop
 	; text add in hl, position in de
-	ld a, [TITLE_MENU_01]
+	ld a, HIGH(TITLE_MENU_01)
 	ld h, a
-	ld a, [TITLE_MENU_01+1]
+	ld a, LOW(TITLE_MENU_01+1)
 	ld l, a
-	ld de, $9C00
+	ld de, $9800 + 32*4
+	call DrawText
+	; text add in hl, position in de
+	ld a, HIGH(TITLE_MENU_02)
+	ld h, a
+	ld a, LOW(TITLE_MENU_02+1)
+	ld l, a
+	ld de, $9800 + 32*5
 	call DrawText
 
 ; turn the LCD on
@@ -1277,8 +1267,7 @@ InitTitleScreen:
 
 
 DoTitleScreen:
-	; 3. Check player input for up and down arrow, and move the cursor accordingly
-	;	3.1. If the cursor variable moved, redraw the cursor obj position
+	; Check inputs
 	ld a, [wNewKeys]
 	cp INPUT_UP
 	jp z, .move_cursor_up
@@ -1288,28 +1277,50 @@ DoTitleScreen:
 	jp z, .select_option
 	cp INPUT_START
 	jp z, .select_option
-
+	jp .waiting
+; Moving cursor up
 .move_cursor_up:
-	nop
-	jp .waiting
+	ld a, [wVerticalMenuCursorIndex]
+	sub 1
+	jp nc, .update_cursor 		; If the cursor went bellow 0, we need to put it to the max
+	ld a, NUMBER_OF_MENU_OPTIONS-1 	; There are currently 2 patterns
+	jp .update_cursor
+; Moving cursor down
 .move_cursor_down:
-	nop
-	jp .waiting
+	ld a, [wVerticalMenuCursorIndex]
+	add 1
+	cp NUMBER_OF_MENU_OPTIONS
+	jp nz, .update_cursor
+	ld a, 0
+	jp .update_cursor
+.update_cursor:
+	; Calculate the cursor position
+	ld [wVerticalMenuCursorIndex], a
+	add 5
+	rlca ; x2
+	rlca ; x4
+	rlca ; x8
+	add 8
+	ld b, LOW(oMenuCursorY)	; Load the address of the cursor Id
+	ld c, a
+	call QueueOamUpdate
+.waiting:
+	; Loop to test input next frame, if no exit happened
+	halt
+	jp DoTitleScreen
+; A or Start was pressed, so we switch start the game with the chosen pattern
 .select_option:
-	; TODO: 
-	; 4. If A or start is pressed, use the current cursor position as the choice to jump to a game init routine
-	;	4.1 To start, make the menu have two options, Empty and Square
-	; Just exit out right now.
+	wait_for_vblank
+	turn_screen_off_safely	; Turn the LCD off
+	call ClearTilemap	; Erase the menu and everything
+	; TODO: Draw the shape you want, branching based on cursor position
 	call ClearCellsSquare
+	; TODO: Hide the menu cursor
+	; Switch to the iteration state
+	turn_screen_on		; Turn the LCD on again
 	ld a, STATE_ITERATING
 	ld [wState], a
 	jp NextState
-	;jp NextState
-
-	; Loop on yourself to test input next frame, if no exit happened
-.waiting
-	halt
-	jp DoTitleScreen
 
 
 ; SECTION : Drawing routines
@@ -1653,6 +1664,10 @@ SECTION "OAM", OAM
 	oPlayerCursorX: db
 	oPlayerCursorId: db
 	oPlayerCursorAttr: db
+	oMenuCursorY: db
+	oMenuCursorX: db
+	oMenuCursorId: db
+	oMenuCursorAttr: db
 
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db	; Used in the game iteration routine between each byte
@@ -1666,5 +1681,5 @@ SECTION "Text", ROM0
 	INPUT_INDICATION_ITERATION_02: db "  SELECT: Reset", 255
 	INPUT_INDICATION_DRAW_01: db "= B: Step  A: Draw" , 255
 	INPUT_INDICATION_DRAW_02: db "  START:      Play", 255
-	TITLE_MENU_01: db "01. Empty Grid", 255
-	TITLE_MENU_02: db "02. Square", 255
+	TITLE_MENU_01: db "     a. Empty Grid     ", 255
+	TITLE_MENU_02: db "     b. Square         ", 255
