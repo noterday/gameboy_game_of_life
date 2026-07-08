@@ -16,7 +16,7 @@ DEF FAST_SCROLL_SPEED = 5
 DEF FAST_SCROLL_TIMER = 25
 DEF KEY_REPEAT_DELAY = 8
 
-DEF NUMBER_OF_MENU_OPTIONS = 2
+DEF NUMBER_OF_MENU_OPTIONS = 5
 
 ; Inputs
 DEF INPUT_DOWN =	%10000000
@@ -509,6 +509,36 @@ ClearCellsSquare:
 	call ToggleCellAtHL
 	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
 	call ToggleCellAtHL
+	ret
+
+
+ClearCellsShip:
+	call ClearCellsEmpty
+	; 3 bits on row 4, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*6)*8)+1
+	call ToggleCellAtHL
+	; 2 bits on row 5, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*7)*8)+2
+	call ToggleCellAtHL
+	; 3 bits on row 6, starting at 8
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
+	call ToggleCellAtHL
+	ret
+
+
+ClearCellsRandom1:
+	call ClearCellsEmpty
+	nop
+	ret
+
+
+ClearCellsRandom2:
+	call ClearCellsEmpty
+	nop
 	ret
 
 
@@ -1246,19 +1276,40 @@ InitTitleScreen:
 
 ;2. Draw the menu options on screen
 	nop
-	; text add in hl, position in de
+	; Text add in hl, position in de
 	ld a, HIGH(TITLE_MENU_01)
 	ld h, a
 	ld a, LOW(TITLE_MENU_01+1)
 	ld l, a
 	ld de, $9800 + 32*4
 	call DrawText
-	; text add in hl, position in de
+	; Line 2 (square)
 	ld a, HIGH(TITLE_MENU_02)
 	ld h, a
 	ld a, LOW(TITLE_MENU_02+1)
 	ld l, a
 	ld de, $9800 + 32*5
+	call DrawText
+	; Line 3 (ship)
+	ld a, HIGH(TITLE_MENU_03)
+	ld h, a
+	ld a, LOW(TITLE_MENU_03+1)
+	ld l, a
+	ld de, $9800 + 32*6
+	call DrawText
+	;  Line 4 (rand1)
+	ld a, HIGH(TITLE_MENU_04)
+	ld h, a
+	ld a, LOW(TITLE_MENU_04+1)
+	ld l, a
+	ld de, $9800 + 32*7
+	call DrawText
+	;  Line 5 (rand2)
+	ld a, HIGH(TITLE_MENU_05)
+	ld h, a
+	ld a, LOW(TITLE_MENU_05+1)
+	ld l, a
+	ld de, $9800 + 32*8
 	call DrawText
 
 ; turn the LCD on
@@ -1322,6 +1373,21 @@ DoTitleScreen:
 	ld a, [wVerticalMenuCursorIndex]
 	cp 1
 	call z, ClearCellsSquare
+	; Pattern 2 (ship)
+	ld a, [wVerticalMenuCursorIndex]
+	cp 2
+	call z, ClearCellsShip
+
+	; Pattern 3 (33% Alive)
+	ld a, [wVerticalMenuCursorIndex]
+	cp 3
+	call z, ClearCellsRandom1
+
+	; Pattern 4 (66% Alive)
+	ld a, [wVerticalMenuCursorIndex]
+	cp 4
+	call z, ClearCellsRandom2
+
 	; Hide the menu cursor
 	ld b, LOW(oMenuCursorId)	; Load the address of the cursor Id
 	ld c, 0
@@ -1691,5 +1757,8 @@ SECTION "Text", ROM0
 	INPUT_INDICATION_ITERATION_02: db "  SELECT: Reset", 255
 	INPUT_INDICATION_DRAW_01: db "= B: Step  A: Draw" , 255
 	INPUT_INDICATION_DRAW_02: db "  START:      Play", 255
-	TITLE_MENU_01: db "     a. Empty Grid     ", 255
-	TITLE_MENU_02: db "     b. Square         ", 255
+	TITLE_MENU_01: db "  a. Empty Grid     ", 255
+	TITLE_MENU_02: db "  b. Square         ", 255
+	TITLE_MENU_03: db "  c. Spaceship      ", 255
+	TITLE_MENU_04: db "  b. One third Noise", 255
+	TITLE_MENU_05: db "  b. Two third Noise", 255
