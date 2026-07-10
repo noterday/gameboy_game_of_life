@@ -180,6 +180,34 @@ MACRO add_cell_updates_to_vram_queue
 ENDM
 
 
+MACRO rng_set_cell_macro 
+ld hl, _SCRN0		; We're gonna iterate over every tilemap cell
+.update_byte\@:
+	push hl			; We're going to trash hl by calling rng
+	call RandInA		; Get a random number in A
+	pop hl			; Restore HL
+	cp \1			; The threshold number from 0-255 (85 is 1/3 btw)
+	jp c, .set_cell\@	; Run we were under the value above
+	jp .do_nothing\@	; Otherwise skip
+.set_cell\@:
+	push hl			; Unfortunately the ToggleCell function also trashes HL...
+	call ToggleCellAtHL	; Toggles the cell in tilemap and wCells both
+	pop hl			; ...but we get it back right away
+.do_nothing\@:
+	ld bc, 1		; We need a 16 bit register that has 1 in it
+	add hl, bc 		; Increase hl to do the next cell
+	; Test if we've gone over the entire screen tilemap
+	ld a, l
+	cp LOW($9BFF)
+	jp nz, .update_byte\@	; If not done, loop
+	ld a, h 	
+	cp HIGH($9BFF)
+	jp nz, .update_byte\@	; If not done, loop
+	; To run the iteration right away
+ENDM
+
+
+
 ; See https://evie.gbdev.io/blog/interrupts.html
 SECTION "VBlank Interrupt", ROM0[$0040]
 VBlankInterrupt:
@@ -481,7 +509,6 @@ ClearCellsEmpty:
 .clearCells:
 	ld a, 0
 	ld [hli], a
-	;inc b
 	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
 	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
 	jp nz, .clearCells; If not done, loop
@@ -530,15 +557,16 @@ ClearCellsShip:
 	ret
 
 
+; Loops over every cell, checks if rng is under 33%, and set the cell if so
 ClearCellsRandom1:
-	call ClearCellsEmpty
-	nop
+	call ClearCellsEmpty	; Start by clearing up the screen to 0
+	rng_set_cell_macro 64
 	ret
 
 
 ClearCellsRandom2:
 	call ClearCellsEmpty
-	nop
+	rng_set_cell_macro 128
 	ret
 
 
@@ -1318,6 +1346,7 @@ InitTitleScreen:
 
 
 DoTitleScreen:
+	call RandInA	; Call RNG every frame so the random choices are unpredictable
 	; Check inputs
 	ld a, [wNewKeys]
 	cp INPUT_UP
@@ -1363,6 +1392,9 @@ DoTitleScreen:
 .select_option:
 	wait_for_vblank
 	turn_screen_off_safely	; Turn the LCD off
+	; Go to this state next by default (some choices will change it)
+	ld a, STATE_PLAYER_INPUT
+	ld [wState], a
 	call ClearTilemap	; Erase the menu and everything
 	; Do the correct pattern based on the cursor position
 	; Pattern 0 (empty grid)
@@ -1394,8 +1426,6 @@ DoTitleScreen:
 	call QueueOamUpdate
 	; Switch to the iteration state
 	turn_screen_on		; Turn the LCD on again
-	ld a, STATE_PLAYER_INPUT
-	ld [wState], a
 	jp NextState
 
 
@@ -1582,6 +1612,7 @@ QueueOamUpdate:
 	pop bc
 	ret
 
+
 ; Draws text. The start of the string must be in HL, and the position on the map at DE
 ; Text is drawn immediately?
 DrawText:
@@ -1673,6 +1704,7 @@ UpdateKeys:
 .knownret
 	ret
 
+
 ; copy bytes from one area to another
 ; @param de: source
 ; @param hl: destination
@@ -1686,6 +1718,31 @@ Memcopy:
 	or c
 	jp nz, Memcopy
 	ret
+
+; Note : Got this from the gbdev.io cheatsheet
+; Would send stuff in BC but I cut that out to just put it into
+;; From: https://github.com/pinobatch/libbet/blob/master/src/rand.z80#L34-L54
+; Generates a pseudorandom 16-bit integer in BC
+; using the LCG formula from cc65 rand():
+; x[i + 1] = x[i] * 0x01010101 + 0xB3B3B3B3
+; @return A=B=state bits 31-24 (which have the best entropy),
+; C=state bits 23-16, HL trashed
+RandInA::
+  ; Add 0xB3 then multiply by 0x01010101
+  ld hl, wRandState+0
+  ld a, [hl]
+  add a, $B3
+  ld [hl+], a
+  adc a, [hl]
+  ld [hl+], a
+  adc a, [hl]
+  ld [hl+], a
+  ;ld c, a
+  adc a, [hl]
+  ld [hl], a
+  ;ld b, a
+  ret
+
 
 ; Graphics
 Tiles:
@@ -1733,6 +1790,7 @@ SECTION "WRAM", WRAM0
 	wReturnToPlayerInput: db	; If set to 1, the game will go to player input state at the end of iteration
 	; Menu variables
 	wVerticalMenuCursorIndex: db	; The index in a vertical menu
+	wRandState: ds 4		; RNG seed
 
 SECTION "OAM", OAM
 	; Player cursor values
@@ -1760,5 +1818,5 @@ SECTION "Text", ROM0
 	TITLE_MENU_01: db "  a. Empty Grid     ", 255
 	TITLE_MENU_02: db "  b. Square         ", 255
 	TITLE_MENU_03: db "  c. Spaceship      ", 255
-	TITLE_MENU_04: db "  b. One third Noise", 255
-	TITLE_MENU_05: db "  b. Two third Noise", 255
+	TITLE_MENU_04: db "  b. Quarter Noise", 255
+	TITLE_MENU_05: db "  b. Half Noise", 255
