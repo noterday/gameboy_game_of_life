@@ -914,7 +914,7 @@ DoIterationState:
 	jp z, .check_up
 	; Scroll down
 	ld a, c
-	cp 110
+	cp 126
 	jp nc, .check_up; Skip scrolling if you hit the down limit
 	add e
 	ld [wScrollY], a
@@ -1145,11 +1145,10 @@ DoInputState:
 	ld e, a
 	; Compare it to the camera position (bottom)
 	ld a, [rSCY]	; Load the camera position (top)
-	add (144-24)	; Adding screen size minus a few pixels
 	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
 	cp e
 	jp nc, .do_up
-	cp 112+(144-24) ; Limit where the scrolling reached the end
+	cp 126 ; Limit where the scrolling reached the end
 	jp nc, .do_up
 	ld a, [wScrollY]
 	add 8
