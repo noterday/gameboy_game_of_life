@@ -607,6 +607,25 @@ DoIterationState:
 ; Start of the iteration loop
 ; We jump here each time the GoL rule check hits a new row of bytes
 .iterate_new_row:
+	ld a, [hTileQueueCursor]
+	cp 128
+	jp c, .end_of_iterate_new_row	; If under 128, we're still good
+.cleaning_up_tilemap_queue:
+	; First, we must check if we have too much update queued, and wait a frame if so.
+	; This can happen on very filled grids
+	; This code preserves registers and kills a frame to do a tilemap update
+	push hl
+	push bc
+	ld a, 1
+	ld [wCellTileMapUpdateReady], a
+	wait_for_vblank
+	pop bc
+	pop hl
+	ld a, [hTileQueueCursor]
+	cp 0
+	jp nz, .cleaning_up_tilemap_queue; Since there can be like 64 updates per row, we might actually need to do this multiple time
+.end_of_iterate_new_row:
+	; This part just clears a lot of registers that must be reset
 	ld a, 0
 	ld b, a ; Clear the middle byte
 	ld d, a ; Clear the top byte
