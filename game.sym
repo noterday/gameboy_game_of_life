@@ -52,8 +52,8 @@
 00:03d1 DoIterationState.dead_u9
 00:03d9 DoIterationState.become_live_u9
 00:03de DoIterationState.become_dead_u9
+00:03e0 DoIterationState.bit7_check
 00:03e0 DoIterationState.post_gol_check_u9
-00:03e1 DoIterationState.bit7_check
 00:03ea DoIterationState.donc_inc_u10
 00:03f0 DoIterationState.donc_inc_u11
 00:03f6 DoIterationState.donc_inc_u12
@@ -154,6 +154,7 @@
 00:06b4 DoIterationState.skip_vram_queue_update_u83
 00:06be DoIterationState.skip_vram_queue_update_u84
 00:06c8 DoIterationState.skip_vram_queue_update_u85
+00:06cd DoIterationState.prepare_next_byte
 00:06e0 DoIterationState.use_buffer2
 00:06e6 DoIterationState.done_testing_if_done
 00:06ef DoIterationState.finish_iterating
@@ -275,8 +276,8 @@
 00:fe05 oMenuCursorX
 00:fe06 oMenuCursorId
 00:fe07 oMenuCursorAttr
-00:ff80 hSavedNeighboursBit0
-00:ff81 hSavedNeighboursBit7
+00:ff80 hSavedNeighbourCountForPreviousBit0
+00:ff81 hSavedNeighbourCountForNewBit7
 00:ff82 hTileQueueCursor
 00:ff83 hOamQueueCursor
 00:ff84 hWindowQueueCursor
