@@ -702,7 +702,7 @@ DoIterationState:
 ; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
 ; Doing the counts for the right side of the previous byte (bit 0)
 .bit0_check:
-	; Todo : The skip if we are starting a new row should be skipped, once we are setting the hSavedNeighbours values correctly
+	; TODO : The skip if we are starting a new row should be skipped, once we are setting the hSavedNeighbours values correctly
 	ld a, l				; We check if at start of row, to skip this part
 	and a, %00000011		; Modulo 4, which is our row length (CELL_ROW)
 	jp z, .bit7_check		; Skip this step if this is the start of a row
@@ -749,12 +749,12 @@ DoIterationState:
 	check_neighbour_bit 0, d ; Top bit
 	check_neighbour_bit 0, e ; Bottom bit
 
-; Saving some extra info to prepare for the byte transition
-	; TODO : Document everything starting from here better aaaah
+; We store the neighbor checks of byte 0, to finish it once we have loaded its right neighbor next loop
+; We also store the value of the currently checked cell, since it will be the left neighbor of byte 7 next time
 	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
 	bit 0, b 	; We need to remember byte 0 for later
-	jp z, .dont_set_extra_bit ; TODO : Use one of those like local jumps here for this bit, jumping over one line. I think
-	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
+	jp z, .dont_set_extra_bit
+	set 7, c	; If bit 0 in B was on, we need to remember that by setting bit 7 of C (the high nybble is always 0 so its free to use)
 .dont_set_extra_bit:
 	ld a, c 
 	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
@@ -767,9 +767,8 @@ DoIterationState:
 	ld a, c 
 	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
 
-; Setup the next memory address in HL
-; TODO : Rename this and document everything it does better. It's a mix of bs
-.get_next_byte:
+; Check over the work we did, comparing the two buffers, and ask for VRAM updates for those cells
+.set_cell_changes_in_vram:
 	; At this stage, changes for the current byte have already been written into it's mirror buffer
 	; We need to find what has changed by comparing both buffers (with a XOR),
 	; to find every graphical tile update we need to do.
@@ -818,6 +817,7 @@ DoIterationState:
 	ld [hTileQueueCursor], a
 
 ; Getting the next byte and loop management
+.prepare_next_byte:
 	; Inc for the next byte
 	pop hl
 	; Here, The popped value is the current buffer's current byte
@@ -841,6 +841,8 @@ DoIterationState:
 	nop
 	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
 	jp .setup_new_iterated_byte; Iterate over the next byte if we didn't exit and didn't jump to a new row
+
+; Final logic checks that are done outside the normal loop, for the top and bottom rows
 .finish_iterating:
 	; TODO : Here, there should be special handling for the top and bottom row that we skipped
 

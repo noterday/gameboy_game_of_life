@@ -145,7 +145,7 @@
 00:064e DoIterationState.donc_inc_u75
 00:0654 DoIterationState.donc_inc_u76
 00:065a DoIterationState.donc_inc_u77
-00:065d DoIterationState.get_next_byte
+00:065d DoIterationState.set_cell_changes_in_vram
 00:0682 DoIterationState.skip_vram_queue_update_u78
 00:068c DoIterationState.skip_vram_queue_update_u79
 00:0696 DoIterationState.skip_vram_queue_update_u80
