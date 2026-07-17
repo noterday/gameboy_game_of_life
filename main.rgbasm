@@ -133,6 +133,36 @@ MACRO game_of_life_neighbours_check
 	game_of_life_update_logic \2
 ENDM
 
+; Counts the neighbours of the final bit and store them for later, as well as the count for the last collumn
+; These values need to be combined with neighbour checks we can only do using the next bytes, after registers are incremented
+MACRO edge_bit_checks
+	; Bit 0 checks (only the left and center neighbours are available, the rest is done while loading the next byte)
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 1, d ; Top-Left bit
+	check_neighbour_bit 1, b ; Left bit
+	check_neighbour_bit 1, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 0, d ; Top bit
+	check_neighbour_bit 0, e ; Bottom bit
+
+; Saving some extra info to prepare for the byte transition
+	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
+	bit 0, b 	; We need to remember byte 0 for later
+	jp z, .dont_set_extra_bit\@
+	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
+.dont_set_extra_bit\@:
+	ld a, c 
+	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
+	
+	; Save the neighbours we will need for bit 7
+	ld c, 0 ; Clear C
+	check_neighbour_bit 0, d ; Top-Left bit
+	check_neighbour_bit 0, b ; Top-Left bit
+	check_neighbour_bit 0, e ; Bottom-Left bit
+	ld a, c 
+	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
+ENDM
 
 ; Check if bit \1 is active inside register \2 and if so, increment register \3
 MACRO check_neighbour_bit
@@ -651,29 +681,17 @@ DoIterationState:
 	cp 0
 	jp nz, .cleaning_up_tilemap_queue
 .end_of_iterate_new_row:
-	; TODO : Instead of setting everything to 0, we should use the registers we have from the last row to calculate what hSavedNeighbourCountForNewBit7/0 should be
+	; TODO : Instead of setting everything to 0, we should use the registers we have from the last row to calculate what hSavedNeighboursBit7/0 should be
 	; The bottom byte of the last iteration should become the middle we use, and the middle of the last iteration becomes the top. We need to fetch e.
 	; Basically, do whatever is needed here, so the normal iteration logic just works for row transitions
 	;
-	; The two variables named hSavedNeighboursBit store cell counts from the previous loops
-	; The h...PreviousBit0 value is the neighbors count for bit 0 of last loop, which was left unfinished.
-	;	Since it's necessary to know if that bit was set or not, we also saved that info in C's 7th bit
-	;	We stored 5/8 neighbours in that variable (left and top) but are missing the right collumn
-	; The h...NewBit7 value stores the left neighbours for the upcoming 7th bit of the current loop
-	;	Those values come from the previous loop so we had to store them early
-	;
-	; So,
-	; we need to get the rightmost row's bytes, and calculate the left/top/bottom neighbours of its last collumn
-		; We should already have the top/middle row in B and E, just mislabeled. Store the count in h...PreviousBit0
-	; we need to get the value of bit 0 at the end of the current row, store that in h...PreviousBit0's 7th bit
-	; we need to store the rightmost collumn's 3 cell values in h...ForNewBit7 also
-	; with that done, the 
+	; Since the previous byte we checked was on a previous row, we need to clear all the cell data registers
 	ld a, 0
 	ld b, a ; Clear the middle byte
 	ld d, a ; Clear the top byte
 	ld e, a ; Clear the bottom byte
-	ldh [hSavedNeighbourCountForNewBit7], a ; Clear the "in-between bytes" neighbour count
-	ldh [hSavedNeighbourCountForPreviousBit0], a ; Clear the "in-between bytes" neighbour count
+	ldh [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
+	ldh [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
 
 ; When switching to a new byte in the same row, the code jumps here
 ; This prep phase sets up the following registers:
@@ -714,13 +732,11 @@ DoIterationState:
 ; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
 ; Doing the counts for the right side of the previous byte (bit 0)
 .bit0_check:
-	; TODO : Remove this skip in the case of new row, once confident that those will work
-	; 	Instead of the skip, there will need to be some extra, unique logic to set the adress at HL to the end of the row, just this once
-	;	Maybe this should be a split code path just here, but before bit7_check
+	; Todo : The skip if we are starting a new row should be skipped, once we are setting the hSavedNeighbours values correctly
 	ld a, l				; We check if at start of row, to skip this part
 	and a, %00000011		; Modulo 4, which is our row length (CELL_ROW)
 	jp z, .bit7_check		; Skip this step if this is the start of a row
-	ldh a, [hSavedNeighbourCountForPreviousBit0]
+	ldh a, [hSavedNeighboursBit0]
 	ld c, a ; Load the previous C
 	check_neighbour_bit 7, d ; Top-Right bit
 	check_neighbour_bit 7, b ; Right bit
@@ -728,12 +744,14 @@ DoIterationState:
 	dec l	; We get to the previous byte
 	game_of_life_update_logic_previous_byte_data ; Bit 0 from the previous loop
 	; Note : Only at this point have we finished updating the previous iteration's byte
+	; At this very moment, before we 'inc l', HL is pointing to the up to date byte into our second buffer
+	; That byte needs to be cleaned up and updated
+	inc l	; We get back to the current byte
 
 .bit7_check:
-	inc l	; We get to the current byte
 	; Bit 7 Checks (started using the previous d,b,e values earlier)
 	; Top
-	ldh a, [hSavedNeighbourCountForNewBit7]
+	ldh a, [hSavedNeighboursBit7]
 	ld c, a
 	check_neighbour_bit 7, d ; Top bit
 	check_neighbour_bit 7, e ; Bottom bit
@@ -751,36 +769,11 @@ DoIterationState:
 	game_of_life_neighbours_check 3,2,1 ; Bit 2 checks
 	game_of_life_neighbours_check 2,1,0 ; Bit 1 checks
 
-	; Bit 0 checks (only the left and center neighbours are available, the rest is done while loading the next byte)
-	ld c, 0 ; Clear C
-	; Left
-	check_neighbour_bit 1, d ; Top-Left bit
-	check_neighbour_bit 1, b ; Left bit
-	check_neighbour_bit 1, e ; Bottom-Left bit
-	; Center
-	check_neighbour_bit 0, d ; Top bit
-	check_neighbour_bit 0, e ; Bottom bit
+	; Extra checks we do early so the edge bits have each other's neighbour's count
+	edge_bit_checks
 
-; We store the neighbor checks of byte 0, to finish it once we have loaded its right neighbor next loop
-; We also store the value of the currently checked cell, since it will be the left neighbor of byte 7 next time
-	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
-	bit 0, b 	; We need to remember byte 0 for later
-	jp z, .dont_set_extra_bit
-	set 7, c	; If bit 0 in B was on, we need to remember that by setting bit 7 of C (the high nybble is always 0 so its free to use)
-.dont_set_extra_bit:
-	ld a, c 
-	ldh [hSavedNeighbourCountForPreviousBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
-	
-	; Save the neighbours we will need for bit 7
-	ld c, 0 ; Clear C
-	check_neighbour_bit 0, d ; Top-Left bit
-	check_neighbour_bit 0, b ; Top-Left bit
-	check_neighbour_bit 0, e ; Bottom-Left bit
-	ld a, c 
-	ldh [hSavedNeighbourCountForNewBit7], a	; We will use this when processing bit 7 next iteration
-
-; Check over the work we did, comparing the two buffers, and ask for VRAM updates for those cells
-.set_cell_changes_in_vram:
+; Update the graphics for the everything we've done so far
+.set_visual_updates:
 	; At this stage, changes for the current byte have already been written into it's mirror buffer
 	; We need to find what has changed by comparing both buffers (with a XOR),
 	; to find every graphical tile update we need to do.
@@ -829,12 +822,11 @@ DoIterationState:
 	ld [hTileQueueCursor], a
 
 ; Getting the next byte and loop management
-.prepare_next_byte:
-	; Inc for the next byte
-	pop hl
-	; Here, The popped value is the current buffer's current byte
-	inc l ; Get the next bit in line
+.increment_loop:
+	pop hl		; We pushed that value at the start of the bit by bit checks
+	inc l 		; Get the next byte to check
 
+	; Test if we are done
 	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte from the size to test if we are done
 	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
 	cp 0
@@ -842,22 +834,19 @@ DoIterationState:
 	ld a, l ; We will check if we are at the final byte or a row's end
 	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
 	jp z, .finish_iterating			; If we are done, we exit the loop
-	jp .done_testing_if_done
+	jp .loop_around
 .use_buffer2:
 	ld a, l ; We will check if we are at the final byte or a row's end
 	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
 	jp z, .finish_iterating			; If we are done, we exit the loop
-.done_testing_if_done:
+.loop_around:
 	; We jump to the new row looping point if (HL modulo 4) is 0, to clear extra registers
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
 	nop
 	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
 	jp .setup_new_iterated_byte; Iterate over the next byte if we didn't exit and didn't jump to a new row
-
-; Final logic checks that are done outside the normal loop, for the top and bottom rows
 .finish_iterating:
 	; TODO : Here, there should be special handling for the top and bottom row that we skipped
-
 
 ; Input related checks for the iteration state
 .player_inputs:
@@ -1796,8 +1785,8 @@ SECTION "OAM", OAM
 	oMenuCursorAttr: db
 
 SECTION "High Ram", HRAM
-	hSavedNeighbourCountForPreviousBit0: db	; Stores the neighbor count of bit 0 (the rightmost bit) in between two iterated bytes
-	hSavedNeighbourCountForNewBit7: db	; IDEM, but stores the neighbor  count of bit 7
+	hSavedNeighboursBit0: db	; Stores the neighbor count of bit 0 (the rightmost bit) in between two iterated bytes
+	hSavedNeighboursBit7: db	; IDEM, but stores the neighbor  count of bit 7
 	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
 	hOamQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
 	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
