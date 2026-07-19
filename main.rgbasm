@@ -611,6 +611,19 @@ DoIterationState:
 	ld hl, wCells2 + CELL_ROW 	; If 1, Using wCells2
 .done_choosing_buffer
 
+; Exceptional edge checks we need to handle whenever we start a new line
+; TODO : This shouldn't really need to happens anymore if we are moving tilemap stuff in a different loop
+.iterate_new_row:
+	; For now, the handling rule is to just clear these registers and do nothing
+	; Later, there will be ways to connect the edges to "wrapparound"
+	ld a, 0
+	ld b, a ; Clear the middle byte
+	ld d, a ; Clear the top byte
+	ld e, a ; Clear the bottom byte
+	ldh [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
+	ldh [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
+	jp .setup_new_iterated_bytes
+
 ; Start of the iteration loop
 ; When switching to a new byte in the same row, the code jumps here
 ; This prep phase sets up the following registers:
@@ -717,14 +730,6 @@ DoIterationState:
 	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
 .end_of_special_case_for_edges
 
-; Update the graphics for the everything we've done so far
-; TODO: Have this be a separate section of code that happens in a second loop at the end,
-; put every check for the tilemap queue getting full there
-.do_visual_updates:
-	; At this stage, changes for the current byte have already been written into it's mirror buffer
-	; We need to find what has changed by comparing both buffers (with a XOR),
-	; to find every graphical tile update we need to do.
-
 ; Getting the next byte and loop management
 .increment_loop:
 	pop hl		; This returns us to the buffer we are currently checking, instead of the one we are updating
@@ -739,43 +744,8 @@ DoIterationState:
 
 	; Test if the byte we are checking was at the end of a row
 	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	jr z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
+	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
 	jp .setup_new_iterated_bytes; Iterate over the next byte if we didn't exit and didn't jump to a new row
-
-; Exceptional edge checks we need to handle whenever we start a new line
-; TODO : This shouldn't really need to happens anymore if we are moving tilemap stuff in a different loop
-.iterate_new_row:
-	; Each row, test if we need to lower the tilemap update buffer
-	ld a, [hTileQueueCursor]
-	cp 128
-	jr c, .handle_edge_bit_checks; If under 128, we're still good
-.cleaning_up_tilemap_queue:
-	; First, we must check if we have too much update queued, and wait a frame if so.
-	; This can happen on very filled grids
-	; This code preserves registers and kills a frame to do a tilemap update
-	push hl
-	push bc
-	; Turn TileMap updates on and kill a frame to get to vblank
-	ld a, 1
-	ld [wCellTileMapUpdateReady], a
-	wait_for_vblank
-	pop bc
-	pop hl
-	ld a, [hTileQueueCursor]
-	; If we trigerred the warning because we had too much update queued, we process until it's at 0
-	cp 0
-	jr nz, .cleaning_up_tilemap_queue
-.handle_edge_bit_checks:
-	; For now, the handling rule is to just clear these registers and do nothing
-	; Later, there will be ways to connect the edges to "wrapparound"
-	ld a, 0
-	ld b, a ; Clear the middle byte
-	ld d, a ; Clear the top byte
-	ld e, a ; Clear the bottom byte
-	ldh [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
-	ldh [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
-	jp .setup_new_iterated_bytes
-
 
 .finish_iterating:
 	; TODO : Here, there should be special handling for the top and bottom row that we skipped
@@ -831,6 +801,23 @@ DoIterationState:
 	; Save the cursor position for the next iteration
 	ld a, l
 	ld [hTileQueueCursor], a
+
+	; Test if we are getting too far up the queue
+	cp 196
+	jr c, .finish_visual_loop	; If still under our limit, just finish this loop iteration
+.cleaning_up_tilemap_queue:
+	; First, we must check if we have too much update queued, and wait a frame if so.
+	; This can happen on very filled grids
+	; This code preserves registers and kills a frame to do a tilemap update
+	; Turn TileMap updates on and kill a frame to get to vblank
+	ld a, 1
+	ld [wCellTileMapUpdateReady], a
+	wait_for_vblank
+	ld a, [hTileQueueCursor]
+	; If we trigerred the warning because we had too much update queued, we process until it's at 0
+	cp 0
+	jr nz, .cleaning_up_tilemap_queue
+.finish_visual_loop:
 
 	; Increment the loop and test if we are done
 	pop hl
