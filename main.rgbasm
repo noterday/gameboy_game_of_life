@@ -88,17 +88,14 @@ CHARMAP "=", 04
 CHARMAP ">", 05
 CHARMAP ".", 128
 
-
-
+; SCREEN RELATED MACROS
 MACRO wait_for_vblank
 .wait_first_vblank\@:
 	ld a, [rLY]
 	cp 144
-	jp c, .wait_first_vblank\@
+	jr c, .wait_first_vblank\@
 ENDM
 	
-
-
 MACRO turn_screen_off_safely
 	wait_for_vblank
 ; Don't turn off the lcd outside of VBlank
@@ -107,16 +104,28 @@ MACRO turn_screen_off_safely
 	ld [rLCDC], a
 ENDM
 
-
 MACRO turn_screen_on
 ; Don't turn on the lcd outside of VBlank
 	; Turn the LCD back on with the wanted flags
 	ld a, LCDCF_ON | LCDCF_BGON | LCDCF_OBJON | LCDCF_WINON | LCDCF_WIN9C00
 	ld [rLCDC], a
 ENDM
+
+
+; GAME OF LIFE RELATED MACRO
+; 	Using many macros for this for speed
+
+; Check if bit \1 is active inside register \2 and if so, increment register \3
+MACRO check_neighbour_bit
+	bit \1, \2	; Check if bit \1 is on inside register \2
+	jr z, .donc_inc\@; If it was 0, skip 'inc c' underneat
+	inc c		; This only runs if the bit check was true
+.donc_inc\@ ; The macro skips here to skip increasing C
+ENDM
+
 ; Counts the neighbours for a byte during iteration
 ; It's assumed that the current checked byte is in b, the top in d, and bottom in e, and c is used to count up
-MACRO game_of_life_neighbours_check
+MACRO game_of_life_neighbours_count
 	; Bit \2 checks
 	ld c, 0 ; Clear C
 	; Left
@@ -130,102 +139,45 @@ MACRO game_of_life_neighbours_check
 	check_neighbour_bit \3, d ; Top-Left bit
 	check_neighbour_bit \3, b ; Left bit
 	check_neighbour_bit \3, e ; Bottom-Left bit
-	game_of_life_update_logic \2
-ENDM
-
-; Counts the neighbours of the final bit and store them for later, as well as the count for the last collumn
-; These values need to be combined with neighbour checks we can only do using the next bytes, after registers are incremented
-MACRO edge_bit_checks
-	; Bit 0 checks (only the left and center neighbours are available, the rest is done while loading the next byte)
-	ld c, 0 ; Clear C
-	; Left
-	check_neighbour_bit 1, d ; Top-Left bit
-	check_neighbour_bit 1, b ; Left bit
-	check_neighbour_bit 1, e ; Bottom-Left bit
-	; Center
-	check_neighbour_bit 0, d ; Top bit
-	check_neighbour_bit 0, e ; Bottom bit
-
-; Saving some extra info to prepare for the byte transition
-	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
-	bit 0, b 	; We need to remember byte 0 for later
-	jp z, .dont_set_extra_bit\@
-	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
-.dont_set_extra_bit\@:
-	ld a, c 
-	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
-	
-	; Save the neighbours we will need for bit 7
-	ld c, 0 ; Clear C
-	check_neighbour_bit 0, d ; Top-Left bit
-	check_neighbour_bit 0, b ; Top-Left bit
-	check_neighbour_bit 0, e ; Bottom-Left bit
-	ld a, c 
-	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
-ENDM
-
-; Check if bit \1 is active inside register \2 and if so, increment register \3
-MACRO check_neighbour_bit
-	bit \1, \2	; Check if bit \1 is on inside register \2
-	jp z, .donc_inc\@; If it was 0, skip 'inc c' underneat
-	inc c		; This only runs if the bit check was true
-.donc_inc\@ ; The macro skips here to skip increasing C
-ENDM
-
-
-; Set the bit \1 in the buffer at HL, depending on the value currently in C
-; The game will check in register B if the currently checked cell \1 is live or not
-MACRO game_of_life_update_logic
 	ld a, c		; We need to check C
-	bit \1, b	; Is the current cell live?
-	game_of_life_logic_inner \1
+	bit \2, b	; Is the current cell live?
+	game_of_life_cell_update_logic \2
 ENDM
 
-; The same logic as the above macro but made to use the previous byte's 0th bit info we hid in a variable
-; The status of cell 0 from the previous byte is hidden in C, so we need to check C and then clear it
-MACRO game_of_life_update_logic_previous_byte_data
-	ld a, c		; We need to check C
-	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
-	bit 7, c	; Is the current cell live?
-	game_of_life_logic_inner 0
-ENDM
-
-; Used in the two macros above exclusively for code cleanliness. See their comments.
-MACRO game_of_life_logic_inner
-	jp z, .dead\@	; Jump if the cell is dead 
+; Updates the state of a cell in a buffer, based on the count in C, and the status of that cell
+MACRO game_of_life_cell_update_logic
+	jr z, .dead\@	; Jump if the cell is dead 
 	; Live cell logic
 	cp a, 2
-	jp c, .become_dead\@ ; Smaller than 2
+	jr c, .become_dead\@ ; Smaller than 2
 	cp a, 4
-	jp nc, .become_dead\@ ; Bigger or equal to 4
-	jp .become_live\@ ; Do nothing
+	jr nc, .become_dead\@ ; Bigger or equal to 4
+	jr .become_live\@ ; Do nothing
 .dead\@:
 	; Dead Cell Logic
 	cp a, 3		; Is there exactly 3 neighbours?
-	jp z, .become_live\@	; If 3, become live
-	jp .become_dead\@	; Do nothing
+	jr z, .become_live\@	; If 3, become live
+	jr .become_dead\@	; Do nothing
 .become_live\@:
 	set \1, [hl]	; Set the bit to become alive in the other buffer
-	jp .post_gol_check\@
+	jr .post_gol_check\@
 .become_dead\@
 	res \1, [hl]	; Set the bit to become dead in the other buffer
 .post_gol_check\@:
 ENDM
 
 ; This code runs at the end of a byte being processed during a gol iteration
-; BD must be a valid address inside the _SCRN0 tilemap
+; BC must be a valid address inside the _SCRN0 tilemap
 ; HL must be the address of the next free slot in the "wTileUpdateQueue"
 ; D must be a bitmask of all changes that happened in the "current byte"
 MACRO add_cell_updates_to_vram_queue 
 	bit \1, d			; We check if the bit \1 is on
-	jp z, .skip_vram_queue_update\@	; If the bit was 0, then we do nothing
+	jr z, .skip_vram_queue_update\@	; If the bit was 0, then we do nothing
 	ld a, b
 	ld [hli], a		; Add the High half of the VRAM address to the tile queue and inc the queue cursor
 	ld a, c
 	ld [hli], a		; Add the low half of the VRAM address to the tile queue and inc the queue cursor
 .skip_vram_queue_update\@:	
-	; Increase BC, the VRAM address we are using, regardless of whether a tile update was added or not
-	inc bc
 ENDM
 
 
@@ -236,8 +188,8 @@ ld hl, _SCRN0		; We're gonna iterate over every tilemap cell
 	call RandInA		; Get a random number in A
 	pop hl			; Restore HL
 	cp \1			; The threshold number from 0-255 (85 is 1/3 btw)
-	jp c, .set_cell\@	; Run we were under the value above
-	jp .do_nothing\@	; Otherwise skip
+	jr c, .set_cell\@	; Run we were under the value above
+	jr .do_nothing\@	; Otherwise skip
 .set_cell\@:
 	push hl			; Unfortunately the ToggleCell function also trashes HL...
 	call ToggleCellAtHL	; Toggles the cell in tilemap and wCells both
@@ -248,10 +200,10 @@ ld hl, _SCRN0		; We're gonna iterate over every tilemap cell
 	; Test if we've gone over the entire screen tilemap
 	ld a, l
 	cp LOW($9BFF)
-	jp nz, .update_byte\@	; If not done, loop
+	jr nz, .update_byte\@	; If not done, loop
 	ld a, h 	
 	cp HIGH($9BFF)
-	jp nz, .update_byte\@	; If not done, loop
+	jr nz, .update_byte\@	; If not done, loop
 	; To run the iteration right away
 ENDM
 
@@ -283,7 +235,7 @@ VBlankHandler:
 	; Is Oam ready to be updated?
 	ld a, [wOamUpdateReady]
 	cp 0
-	jp z, .tilemap_update
+	jr z, .tilemap_update
 	; Get the start of the update queue for later
 	ld a, LOW(wOamUpdateQueue)
 	ld e, a					; E stores the start of the VRAM queue
@@ -291,7 +243,7 @@ VBlankHandler:
 	; Load the cursor into C and check if we can skip work
 	ld a, [hOamQueueCursor]
 	cp 0
-	jp z, .tilemap_update
+	jr z, .tilemap_update
 	ld c, a
 	dec c	; The cursor points to the next item to write to, but we want the last item written
 	; Load the value for H which will be static since OAM is 160 bytes long
@@ -301,11 +253,11 @@ VBlankHandler:
 	ld a, [bc]	; Load the low VRAM byte
 	ld l, a
 	dec c		; Decrease our cursor by 1
-	jp z, .oam_cell_update_loop_done	; The OAM update queue is alligned, so if the cursor reaches 0, we are done looping
+	jr z, .oam_cell_update_loop_done	; The OAM update queue is alligned, so if the cursor reaches 0, we are done looping
 	ld a, [bc]	; Load the value we need to write to OAM
 	ld [hl], a	; Write the change to OAM
 	dec c		; Decrease our cursor again
-	jp nz, .oam_cell_update_loop	; The OAM update queue is alligned, so if the cursor reaches 0, we are done
+	jr nz, .oam_cell_update_loop	; The OAM update queue is alligned, so if the cursor reaches 0, we are done
 .oam_cell_update_loop_done
 	; Because of the way we exit, we wouldn't have done the last change
 	ld a, [bc]	; Load the value we need to write to OAM
@@ -320,7 +272,7 @@ VBlankHandler:
 	; Check if the game is ready to process a cell grid update
 	ld a, [wCellTileMapUpdateReady]		; Check if Tilemap update is ready (an iteration was finished)
 	cp 0
-	jp z, .update_text	; If zero, we need to do nothing here
+	jr z, .update_text	; If zero, we need to do nothing here
 	
 	; Get the start of the update queue for later
 	ld a, LOW(wTileUpdateQueue)
@@ -331,7 +283,7 @@ VBlankHandler:
 	; Load cursor into C and check if we can skip work
 	ld a, [hTileQueueCursor] 	; Get the queue cursor into A
 	cp 0
-	jp z, .tile_update_done		; If tile queue is at 0, skip doing work
+	jr z, .tile_update_done		; If tile queue is at 0, skip doing work
 	ld c, a				; Load the low half of BC
 	dec c		; When coming from iterating, the cursor points to the byte after the end of the queue
 
@@ -340,7 +292,7 @@ VBlankHandler:
 	sub e		; Get the number of bytes in the update queue (End of queue (A) minus Start of queue (E))
 	rra		; Divide the number by 2 to get the update count
 	cp 32		; Compare the number of updates with 32
-	jp c, .use_full_counter	; If smaller than 32, let's use the amount as-is
+	jr c, .use_full_counter	; If smaller than 32, let's use the amount as-is
 	ld a, 32 		; Elseway, cap value to 64
 .use_full_counter
 	ld e, a			; E now stores how many updates we want to do this VBLANK
@@ -361,7 +313,7 @@ VBlankHandler:
 
 	; Loop management
 	dec e				; Dec our counter variable
-	jp nz, .cell_update_loop	; Loop until E == 0
+	jr nz, .cell_update_loop	; Loop until E == 0
 
 	; Finish up
 	; We need to save the cursor position for later, and see if we are fully done
@@ -369,7 +321,7 @@ VBlankHandler:
 	inc a 		; Move the cursor up by 1 (to match the DEC at the start of vblank, see above)
 	ld [hTileQueueCursor], a ; Save the cursor
 	cp LOW(wTileUpdateQueue) ; Is the cursor back to the starting position?
-	jp nz, .update_text
+	jr nz, .update_text
 	; If the cursor is back to the start position, clear the "update ready" status
 	ld a, 0
 .tile_update_done
@@ -377,7 +329,7 @@ VBlankHandler:
 .update_text
 	ld a, [wTextIndicatorNeedsUpdate]
 	cp 0
-	jp z, .vblank_done
+	jr z, .vblank_done
 	; ...
 	ld a, [wTextIndication1]
 	ld h, a
@@ -435,7 +387,7 @@ EntryPoint:
 	ld a, 3
 	ld [hli], a
 	dec e
-	jp nz, .add_window_tile
+	jr nz, .add_window_tile
 	nop
 ; Set the Window Position
 	ld a, 128
@@ -452,7 +404,7 @@ EntryPoint:
 	ld a, IEF_VBLANK
 	ldh [rIE], a
 	ei	; Turn on interrupts globally
-	jp NextState
+	jr NextState
 
 
 WaitForScreenUpdate:
@@ -460,8 +412,8 @@ WaitForScreenUpdate:
 	halt	; Wait and do nothing
 	ld a, [wCellTileMapUpdateReady]
 	cp 0
-	jp z, .done_waiting
-	jp .wait
+	jr z, .done_waiting
+	jr .wait
 .done_waiting
 	ret
 
@@ -477,12 +429,12 @@ NextState:
 	wait_for_vblank
 	ld a, [wWaitingForKeyRelease]
 	cp 1
-	jp nz, .switch_state
+	jr nz, .switch_state
 	ld a, [wCurKeys]
 	cp 0
-	jp z, .switch_state
+	jr z, .switch_state
 	halt
-	jp NextState
+	jr NextState
 
 .switch_state
 	; Call the init routine
@@ -548,7 +500,7 @@ ClearTilemap:
 	ld [hli], a
 	ld a, h
 	cp $A0 ; If we just went pas 9FFF, then H will be A0 for the first time
-	jp nz, .loop
+	jr nz, .loop
 	ret
 
 
@@ -560,7 +512,7 @@ ClearCellsEmpty:
 	ld [hli], a
 	ld a, l 	; wCell is alligned at 0, and CELL_TOTAL fits in l
 	cp 0		; We are clearing 256 bit so itll wrap to 0 when were done
-	jp nz, .clearCells; If not done, loop
+	jr nz, .clearCells; If not done, loop
 	ret
 
 
@@ -622,7 +574,7 @@ ClearCellsRandom2:
 InitIterationState:
 	ld a, [wReturnToPlayerInput]
 	cp 1
-	jp z, .ret
+	jr z, .ret
 	ld a, 0
 	ld [wCellTileMapUpdateReady], a
 	; Set the text info
@@ -647,23 +599,156 @@ DoIterationState:
 	; Clear the input buffer
 	ld a, 0
 	ld [wKeyBuffer], a
+	ld hl, wCells + CELL_ROW	; If 0, use wCells
+
 	; Choose a cell grid to iterate. The game switches between two buffers each turn.
+.choose_a_buffer:
 	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
 	cp 0
-	jp nz, .choose_buffer2		; If not zero, use "wCells2"
-	ld hl, wCells + CELL_ROW	; If 0, use wCells
-	jp .chose_buffer_at_start
+	jr nz, .choose_buffer2		; If not zero, use "wCells2"
+	jr .done_choosing_buffer
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW 	; If 1, Using wCells2
-.chose_buffer_at_start
+.done_choosing_buffer
 
 ; Start of the iteration loop
-; We jump here each time the GoL rule check hits a new row of bytes
+; When switching to a new byte in the same row, the code jumps here
+; This prep phase sets up the following registers:
+; B: The current byte
+; D: The byte above the current one
+; E: The byte bellow the current one
+; C: The neighbor counter (if we didn't just start a new row, it already has the count for the 3 left neighbors for the leftmost cell)
+; HL : The equivalent in memory to our current address in the other buffer
+.setup_new_iterated_bytes:
+	push hl		; We have to push HL and recover it at the end of the iteration process
+	ld b, [hl]	; The current byte is now in B
+	; Move HL to point to the bottom byte
+	ld a, l
+	add a, CELL_ROW
+	ld l, a
+	ld e, [hl] 	; The bottom byte is now in E
+	; Move HL to point to the top byte
+	ld l, a
+	sub a, DOUBLE_CELL_ROW
+	ld l, a;
+	ld d, [hl] 	; The top byte is now in D
+	; Make HL point to the other buffer
+	add a, CELL_ROW
+	ld l, a ; We get back the original address
+
+; Swap the buffer from the one we read to, to the one we want to write into
+.swap_buffers
+	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
+	cp 0
+	jr nz, .swap_to_buffer1
+	set 7, l
+	jr .swapped_buffers
+.swap_to_buffer1:
+	res 7, l
+.swapped_buffers:
+
+; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
+; Doing the counts for the right side of the previous byte (bit 0)
+.bit0_check:
+	ldh a, [hSavedNeighboursBit0]
+	ld c, a ; Load the previous C
+	check_neighbour_bit 7, d ; Top-Right bit
+	check_neighbour_bit 7, b ; Right bit
+	check_neighbour_bit 7, e ; Bottom-Right bit
+	dec l	; We get to the previous byte
+	ld a, c		; We need to check C
+	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
+	bit 7, c	; Is the current cell live?
+	game_of_life_cell_update_logic 0
+	inc l	; We get back to the current byte
+
+.bit7_check:
+	; Bit 7 Checks (started using the previous d,b,e values earlier)
+	; Top
+	ldh a, [hSavedNeighboursBit7]
+	ld c, a
+	check_neighbour_bit 7, d ; Top bit
+	check_neighbour_bit 7, e ; Bottom bit
+	; Right
+	check_neighbour_bit 6, d ; Top-Right bit
+	check_neighbour_bit 6, b ; Right bit
+	check_neighbour_bit 6, e ; Bottom bit
+	ld a, c		; We need to check C
+	bit 7, b	; Is the current cell live?
+	game_of_life_cell_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
+.bit6to1_check:
+	; Do the neighbor count and updates for bit 6-1 (no special logic needed for the center)
+	game_of_life_neighbours_count 7,6,5 ; Bit 6 checks
+	game_of_life_neighbours_count 6,5,4 ; Bit 5 checks
+	game_of_life_neighbours_count 5,4,3 ; Bit 4 checks
+	game_of_life_neighbours_count 4,3,2 ; Bit 3 checks
+	game_of_life_neighbours_count 3,2,1 ; Bit 2 checks
+	game_of_life_neighbours_count 2,1,0 ; Bit 1 checks
+
+; TODO: This entire section, down to .end_of_special_case_for_edges, only should occur when you aren't on the edge bit (the fourth one)
+; If we detect here that are are on the edge, we do a completely different branch of code that uses different bytes for the 0 and 7 count
+; There may also  need to be a special case for the top and bottom lines
+.special_case_for_edges:
+	; Bit 0 checks (only the left and center neighbours are available, the rest is done while loading the next byte)
+	ld c, 0 ; Clear C
+	; Left
+	check_neighbour_bit 1, d ; Top-Left bit
+	check_neighbour_bit 1, b ; Left bit
+	check_neighbour_bit 1, e ; Bottom-Left bit
+	; Center
+	check_neighbour_bit 0, d ; Top bit
+	check_neighbour_bit 0, e ; Bottom bit
+
+; Saving some extra info to prepare for the byte transition
+	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
+	bit 0, b 	; We need to remember byte 0 for later
+	jr z, .dont_set_extra_bit
+	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
+.dont_set_extra_bit:
+	ld a, c 
+	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
+	
+	; Save the neighbours we will need for bit 7
+	ld c, 0 ; Clear C
+	check_neighbour_bit 0, d ; Top-Left bit
+	check_neighbour_bit 0, b ; Top-Left bit
+	check_neighbour_bit 0, e ; Bottom-Left bit
+	ld a, c 
+	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
+.end_of_special_case_for_edges
+
+; Update the graphics for the everything we've done so far
+; TODO: Have this be a separate section of code that happens in a second loop at the end,
+; put every check for the tilemap queue getting full there
+.do_visual_updates:
+	; At this stage, changes for the current byte have already been written into it's mirror buffer
+	; We need to find what has changed by comparing both buffers (with a XOR),
+	; to find every graphical tile update we need to do.
+
+; Getting the next byte and loop management
+.increment_loop:
+	pop hl		; This returns us to the buffer we are currently checking, instead of the one we are updating
+	inc l 		; Get the next byte to check
+
+	; We test if we hit the end of either cell grids, and exit the loop if so
+	ld a, l 				; We need to check where L is
+	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Compare to the end of wCells
+	jr z, .finish_iterating			; If we are done, we exit the loop
+	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Compare to the end of wCells2 
+	jr z, .finish_iterating			; If we are done, we exit the loop
+
+	; Test if the byte we are checking was at the end of a row
+	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
+	jr z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
+	jp .setup_new_iterated_bytes; Iterate over the next byte if we didn't exit and didn't jump to a new row
+
+; Exceptional edge checks we need to handle whenever we start a new line
+; TODO : This shouldn't really need to happens anymore if we are moving tilemap stuff in a different loop
 .iterate_new_row:
 	; Each row, test if we need to lower the tilemap update buffer
 	ld a, [hTileQueueCursor]
 	cp 128
-	jp c, .end_of_iterate_new_row	; If under 128, we're still good
+	jr c, .handle_edge_bit_checks; If under 128, we're still good
 .cleaning_up_tilemap_queue:
 	; First, we must check if we have too much update queued, and wait a frame if so.
 	; This can happen on very filled grids
@@ -679,116 +764,35 @@ DoIterationState:
 	ld a, [hTileQueueCursor]
 	; If we trigerred the warning because we had too much update queued, we process until it's at 0
 	cp 0
-	jp nz, .cleaning_up_tilemap_queue
-.end_of_iterate_new_row:
-	; TODO : Instead of setting everything to 0, we should use the registers we have from the last row to calculate what hSavedNeighboursBit7/0 should be
-	; The bottom byte of the last iteration should become the middle we use, and the middle of the last iteration becomes the top. We need to fetch e.
-	; Basically, do whatever is needed here, so the normal iteration logic just works for row transitions
-	;
-	; Since the previous byte we checked was on a previous row, we need to clear all the cell data registers
+	jr nz, .cleaning_up_tilemap_queue
+.handle_edge_bit_checks:
+	; For now, the handling rule is to just clear these registers and do nothing
+	; Later, there will be ways to connect the edges to "wrapparound"
 	ld a, 0
 	ld b, a ; Clear the middle byte
 	ld d, a ; Clear the top byte
 	ld e, a ; Clear the bottom byte
 	ldh [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
 	ldh [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
+	jp .setup_new_iterated_bytes
 
-; When switching to a new byte in the same row, the code jumps here
-; This prep phase sets up the following registers:
-; B: The current byte
-; D: The byte above the current one
-; E: The byte bellow the current one
-; C: The neighbor counter (if we didn't just start a new row, it already has the count for the 3 left neighbors for the leftmost cell)
-; HL : The equivalent in memory to our current address in the other buffer
-.setup_new_iterated_byte:
-	push hl		; We save HL for later
-	ld b, [hl]	; The current byte is now in B
-	; Move HL to point to the bottom byte
-	ld a, l
-	add a, CELL_ROW
-	ld l, a
-	ld e, [hl] 	; The bottom byte is now in E
-	; Move HL to point to the top byte
-	ld l, a
-	sub a, DOUBLE_CELL_ROW
-	ld l, a;
-	ld d, [hl] 	; The top byte is now in D
-	; Make HL point to the other buffer
-	add a, CELL_ROW
-	ld l, a ; We get back the original address
-	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
-	cp 0
-	jp nz, .using_buffer2		;
-	ld a, l
-	add a, CELL_TOTAL
-	ld l, a				; We are using buffer1 bytes, so we need to write to buffer2
-	jp .chose_buffer
-.using_buffer2:
-	ld a, l
-	sub a, CELL_TOTAL
-	ld l, a				; We are using buffer2 bytes, so we need to write to buffer1
-.chose_buffer:
 
-; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
-; Doing the counts for the right side of the previous byte (bit 0)
-.bit0_check:
-	; Todo : The skip if we are starting a new row should be skipped, once we are setting the hSavedNeighbours values correctly
-	ld a, l				; We check if at start of row, to skip this part
-	and a, %00000011		; Modulo 4, which is our row length (CELL_ROW)
-	jp z, .bit7_check		; Skip this step if this is the start of a row
-	ldh a, [hSavedNeighboursBit0]
-	ld c, a ; Load the previous C
-	check_neighbour_bit 7, d ; Top-Right bit
-	check_neighbour_bit 7, b ; Right bit
-	check_neighbour_bit 7, e ; Bottom-Right bit
-	dec l	; We get to the previous byte
-	game_of_life_update_logic_previous_byte_data ; Bit 0 from the previous loop
-	; Note : Only at this point have we finished updating the previous iteration's byte
-	; At this very moment, before we 'inc l', HL is pointing to the up to date byte into our second buffer
-	; That byte needs to be cleaned up and updated
-	inc l	; We get back to the current byte
-
-.bit7_check:
-	; Bit 7 Checks (started using the previous d,b,e values earlier)
-	; Top
-	ldh a, [hSavedNeighboursBit7]
-	ld c, a
-	check_neighbour_bit 7, d ; Top bit
-	check_neighbour_bit 7, e ; Bottom bit
-	; Right
-	check_neighbour_bit 6, d ; Top-Right bit
-	check_neighbour_bit 6, b ; Right bit
-	check_neighbour_bit 6, e ; Bottom bit
-	game_of_life_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
-.bit6to1_check:
-	; Do the neighbor count and updates for bit 6-1 (no special logic needed for the center)
-	game_of_life_neighbours_check 7,6,5 ; Bit 6 checks
-	game_of_life_neighbours_check 6,5,4 ; Bit 5 checks
-	game_of_life_neighbours_check 5,4,3 ; Bit 4 checks
-	game_of_life_neighbours_check 4,3,2 ; Bit 3 checks
-	game_of_life_neighbours_check 3,2,1 ; Bit 2 checks
-	game_of_life_neighbours_check 2,1,0 ; Bit 1 checks
-
-	; Extra checks we do early so the edge bits have each other's neighbour's count
-	edge_bit_checks
-
-; Update the graphics for the everything we've done so far
-.set_visual_updates:
-	; At this stage, changes for the current byte have already been written into it's mirror buffer
-	; We need to find what has changed by comparing both buffers (with a XOR),
-	; to find every graphical tile update we need to do.
-
+.finish_iterating:
+	; TODO : Here, there should be special handling for the top and bottom row that we skipped
+.visual_updates:
+	ld hl, wCells				; We are going to loop over both cell buffers
+.tilemap_update_loop:
 	; Compare the previous byte in both buffers to find changes
-	dec l 		; We need to look back at the old byte again for a bit
+	push hl
 	ld h, HIGH(wCells)
 	set 7, l	; This gives us the byte in buffer one, given it is 128 byte wide
 	ld a, [hl]
 	res 7, l	; This gives us the byte in buffer two
-	xor a, [hl] 	; Here, A should only contain the "Changed" bits
-	ld d, a		; D is now a bit mask where 1 bit signifies that a change has happened
+	xor a, [hl] 	; Here, A should only contain the "Changed" bits between both buffers
+	ld d, a		; D is now a bit mask where a 1 bit tells you that an update happened
 
 	; Multiply HL by 8 to get into VRAM address space
-	; This works because HL is aligned a certain way (don't know how to explain it...)
+	; This works directly because wCells is alligned correctly to match the start of VRAM Tilemaps
 	ld h, 0		; We want to multiply l only
 	add hl, hl
 	add hl, hl
@@ -798,11 +802,10 @@ DoIterationState:
 	ld c, LOW(_SCRN0)	
 	add hl, bc
 	ld b, h
-	ld c, l		; BC is now a valid VRAM address, where our byte of cell starts
-	;dec bc		; Everything seemed to be off by 1
+	ld c, l		; BC is now a valid VRAM address, where our tilemap representation of the cells is
 
 
-	; Set HL to a position in the tile queue
+	; Set HL to a position in the tile update queue
 	ld h, HIGH(wTileUpdateQueue)
 	ld a, [hTileQueueCursor]
 	ld l, a 	; HL is now the next queue address to update
@@ -810,43 +813,32 @@ DoIterationState:
 	; For updates in each bit
 	; Check if any of the 8 cells was changed by comparing the current and new buffers
 	add_cell_updates_to_vram_queue 7
+	inc bc
 	add_cell_updates_to_vram_queue 6
+	inc bc
 	add_cell_updates_to_vram_queue 5
+	inc bc
 	add_cell_updates_to_vram_queue 4
+	inc bc
 	add_cell_updates_to_vram_queue 3
+	inc bc
 	add_cell_updates_to_vram_queue 2
+	inc bc
 	add_cell_updates_to_vram_queue 1
+	inc bc
 	add_cell_updates_to_vram_queue 0
+	inc bc
 	; Save the cursor position for the next iteration
 	ld a, l
 	ld [hTileQueueCursor], a
 
-; Getting the next byte and loop management
-.increment_loop:
-	pop hl		; We pushed that value at the start of the bit by bit checks
-	inc l 		; Get the next byte to check
+	; Increment the loop and test if we are done
+	pop hl
+	inc l 					; Get the next byte to check
+	ld a, l 				; We need to check where L is
+	cp LOW(wCells)+CELL_TOTAL-1		; Compare to the end of wCells
+	jp nz, .tilemap_update_loop
 
-	; Test if we are done
-	; The final byte is one collumn and one row before the end, so we sub 1 row and 1 byte from the size to test if we are done
-	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
-	cp 0
-	jp nz, .use_buffer2		;
-	ld a, l ; We will check if we are at the final byte or a row's end
-	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
-	jp z, .finish_iterating			; If we are done, we exit the loop
-	jp .loop_around
-.use_buffer2:
-	ld a, l ; We will check if we are at the final byte or a row's end
-	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Check if the byte we just did was the final one
-	jp z, .finish_iterating			; If we are done, we exit the loop
-.loop_around:
-	; We jump to the new row looping point if (HL modulo 4) is 0, to clear extra registers
-	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	nop
-	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
-	jp .setup_new_iterated_byte; Iterate over the next byte if we didn't exit and didn't jump to a new row
-.finish_iterating:
-	; TODO : Here, there should be special handling for the top and bottom row that we skipped
 
 ; Input related checks for the iteration state
 .player_inputs:
@@ -862,10 +854,10 @@ DoIterationState:
 	; Choose the speed of scrolling based on how many frame the key was held
 	ld a, [wKeyRepeatFrameCount]
 	cp FAST_SCROLL_TIMER 
-	jp c, .use_slow_scroll
+	jr c, .use_slow_scroll
 	ld a, FAST_SCROLL_SPEED
 	ld e, a
-	jp .check_down
+	jr .check_down
 .use_slow_scroll:
 	ld a, SLOW_SCROLL_SPEED
 	ld e, a
@@ -873,24 +865,24 @@ DoIterationState:
 	; Check down
 	ld a, d
 	and a, INPUT_DOWN
-	jp z, .check_up
+	jr z, .check_up
 	; Scroll down
 	ld a, c
 	cp 126
-	jp nc, .check_up; Skip scrolling if you hit the down limit
+	jr nc, .check_up; Skip scrolling if you hit the down limit
 	add e
 	ld [wScrollY], a
 .check_up
 	; Check up
 	ld a, d			; Recover inputs
 	and a, INPUT_UP
-	jp z, .check_left
+	jr z, .check_left
 	; Scroll up
 	ld a, c
 	sub e
-	jp c, .scroll_to_top_bound	; Skip scrolling if you hit the up limit
+	jr c, .scroll_to_top_bound	; Skip scrolling if you hit the up limit
 	ld [wScrollY], a
-	jp .check_left
+	jr .check_left
 .scroll_to_top_bound
 	ld a, 0
 	ld [wScrollY], a
@@ -898,23 +890,23 @@ DoIterationState:
 	; Check left
 	ld a, d			; Recover inputs
 	and a, INPUT_LEFT
-	jp z, .check_right
+	jr z, .check_right
 	ld a, b 			; Get the X Scroll position
 	sub e				; Scroll left by E pixels
-	jp c, .scroll_to_left_bound	; If scroll would wrapparound, just make the scroll value 0 instead
+	jr c, .scroll_to_left_bound	; If scroll would wrapparound, just make the scroll value 0 instead
 	ld [wScrollX], a
-	jp .check_right
+	jr .check_right
 .scroll_to_left_bound
 	ld a, 0
 	ld [wScrollX], a
 .check_right
 	ld a, d			; Recover inputs
 	and a, INPUT_RIGHT
-	jp z, .check_input_state_buttons
+	jr z, .check_input_state_buttons
 	; Scroll right
 	ld a, b
 	cp 96	; How large you can go without camera looping left
-	jp nc, .check_input_state_buttons	; Skip scrolling if you hit the right limit
+	jr nc, .check_input_state_buttons	; Skip scrolling if you hit the right limit
 	add e
 	ld [wScrollX], a
 .check_input_state_buttons:
@@ -925,7 +917,7 @@ DoIterationState:
 	and a, INPUT_A | INPUT_B ; If player pressed A, B 
 	or e
 	cp 0
-	jp z, .check_select_button
+	jr z, .check_select_button
 	; Go into player input state
 	ld a, 0
 	ld [wReturnToPlayerInput], a
@@ -934,7 +926,7 @@ DoIterationState:
 .check_select_button:
 	ld a, d		; Recover inputs
 	and a, INPUT_SELECT
-	jp z, .done_checking_end_iteration_inputs
+	jr z, .done_checking_end_iteration_inputs
 	ld a, STATE_TITLE_SCREEN
 	ld [wState], a
 ; We are fully done. If there was a state switch, go to the state switcher, elseway, start over
@@ -986,12 +978,12 @@ InitInputState:
 	rlca ; x8
 .cursor_adjust_left
 	cp d
-	jp nc, .cursor_adjust_right
-	jp .cursor_adjust_needed
+	jr nc, .cursor_adjust_right
+	jr .cursor_adjust_needed
 .cursor_adjust_right
 	cp e
-	jp c, .cursor_adjust_up
-	jp .cursor_adjust_needed
+	jr c, .cursor_adjust_up
+	jr .cursor_adjust_needed
 .cursor_adjust_up
 	ld a, [rSCY]	; Load the camera Y register
 	add 16 		; a position slightly offset from the edge of the screen
@@ -1005,12 +997,12 @@ InitInputState:
 	rlca ; x8
 	; Adjust up
 	cp d
-	jp nc, .cursor_adjust_down
-	jp .cursor_adjust_needed
+	jr nc, .cursor_adjust_down
+	jr .cursor_adjust_needed
 .cursor_adjust_down
 	cp e
-	jp c, .ret
-	jp .cursor_adjust_needed
+	jr c, .ret
+	jr .cursor_adjust_needed
 .cursor_adjust_needed
 	; Get the coordinates at the center of the screen
 	ld a, [rSCX]
@@ -1042,7 +1034,7 @@ DoInputState:
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
 	ld d, a			; Load just pressed inputs into C to save them close by
 	and a, INPUT_START	; Check for "Start" first
-	jp z, .check_select_button	; If start is not pressed, skip start processing
+	jr z, .check_select_button	; If start is not pressed, skip start processing
 	ld a, STATE_ITERATING 
 	ld [wState], a			; Return to the iteration state
 	; Hide the player cursor
@@ -1053,7 +1045,7 @@ DoInputState:
 .check_select_button:
 	ld a, d
 	and a, INPUT_SELECT
-	jp z, .check_a_button
+	jr z, .check_a_button
 	ld a, STATE_TITLE_SCREEN
 	ld [wState], a
 	; Hide the player cursor
@@ -1064,7 +1056,7 @@ DoInputState:
 .check_a_button ; Toggle grid cell if A is pressed
 	ld a, d
 	and a, INPUT_A
-	jp z, .check_b_button
+	jr z, .check_b_button
 	call UpdateCellAtCursor
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a
@@ -1072,7 +1064,7 @@ DoInputState:
 .check_b_button ; Move forward one tick if B is pressed
 	ld a, d
 	and a, INPUT_B
-	jp z, .check_directions
+	jr z, .check_directions
 	ld a, 1
 	ld [wReturnToPlayerInput], a
 	ld a, STATE_ITERATING 
@@ -1081,7 +1073,7 @@ DoInputState:
 .check_directions
 	ld a, [wKeyRepeatFrameCount]
 	cp FAST_SCROLL_TIMER 
-	jp c, .do_bottom
+	jr c, .do_bottom
 	ld a, (FAST_SCROLL_TIMER-KEY_REPEAT_DELAY)
 	ld [wKeyRepeatFrameCount], a
 	ld a, [wCurKeys]
@@ -1089,7 +1081,7 @@ DoInputState:
 .do_bottom
 	ld a, d			; Recover the new keys
 	and a, INPUT_DOWN	; Filter the down key
-	jp z, .do_up		; If down was pressed, continue
+	jr z, .do_up		; If down was pressed, continue
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridY]
 	inc a
@@ -1097,7 +1089,7 @@ DoInputState:
 .bound_check_bottom
 	ld a, [wPlayerCursorGridY]
 	cp 32
-	jp nz, .camera_scroll_check_bottom
+	jr nz, .camera_scroll_check_bottom
 	ld a, 31
 	ld [wPlayerCursorGridY], a
 .camera_scroll_check_bottom
@@ -1110,16 +1102,16 @@ DoInputState:
 	ld a, [rSCY]	; Load the camera position (top)
 	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
 	cp e
-	jp nc, .do_up
+	jr nc, .do_up
 	cp 126 ; Limit where the scrolling reached the end
-	jp nc, .do_up
+	jr nc, .do_up
 	ld a, [wScrollY]
 	add 8
 	ld [wScrollY], a
 .do_up
 	ld a, d
 	and a, INPUT_UP
-	jp z, .do_left
+	jr z, .do_left
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridY]
 	dec a
@@ -1127,7 +1119,7 @@ DoInputState:
 .bound_check_top
 	ld a, [wPlayerCursorGridY]
 	cp $FF
-	jp nz, .camera_scroll_check_top
+	jr nz, .camera_scroll_check_top
 	ld a, 0
 	ld [wPlayerCursorGridY], a
 .camera_scroll_check_top
@@ -1139,9 +1131,9 @@ DoInputState:
 	ld a, [rSCY]	; Load the camera position (top)
 	inc a
 	cp e
-	jp c, .do_left
+	jr c, .do_left
 	cp 9 ; Limit where you finished scrolling up
-	jp c, .do_left
+	jr c, .do_left
 	ld a, [wScrollY]
 	sub 8
 	ld [wScrollY], a
@@ -1149,7 +1141,7 @@ DoInputState:
 	; Left
 	ld a, d
 	and a, INPUT_LEFT
-	jp z, .do_right
+	jr z, .do_right
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridX]
 	dec a
@@ -1157,7 +1149,7 @@ DoInputState:
 .bound_check_left
 	ld a, [wPlayerCursorGridX]
 	cp $FF
-	jp nz, .camera_scroll_check_left
+	jr nz, .camera_scroll_check_left
 	ld a, 0
 	ld [wPlayerCursorGridX], a
 .camera_scroll_check_left
@@ -1169,9 +1161,9 @@ DoInputState:
 	ld a, [rSCX]
 	inc a
 	cp e
-	jp c, .do_right
+	jr c, .do_right
 	cp 9 ; Limit where ou finished scrolling left
-	jp c, .do_right
+	jr c, .do_right
 	ld a, [wScrollX]
 	sub 8
 	ld [wScrollX], a
@@ -1179,7 +1171,7 @@ DoInputState:
 	; Right
 	ld a, d
 	and a, INPUT_RIGHT
-	jp z, .update_sprite_position
+	jr z, .update_sprite_position
 	; Update the grid coordinates
 	ld a, [wPlayerCursorGridX]
 	inc a
@@ -1187,7 +1179,7 @@ DoInputState:
 .bound_check_right
 	ld a, [wPlayerCursorGridX]
 	cp 32
-	jp nz, .camera_scroll_check_right
+	jr nz, .camera_scroll_check_right
 	ld a, 31
 	ld [wPlayerCursorGridX], a
 .camera_scroll_check_right
@@ -1201,9 +1193,9 @@ DoInputState:
 	add (160-24)	; Adding screen size minus a few pixels
 	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
 	cp e
-	jp nc, .update_sprite_position
+	jr nc, .update_sprite_position
 	cp 96+(160-24) ; Limit where the scrolling reached the end
-	jp nc, .update_sprite_position
+	jr nc, .update_sprite_position
 	ld a, [wScrollX]
 	add 8
 	ld [wScrollX], a
@@ -1259,7 +1251,7 @@ InitTitleScreen:
 .ClearOam:
 	ld [hli], a
 	dec b
-	jp nz, .ClearOam
+	jr nz, .ClearOam
 ; Write objects
 	; Cursor
 	ld hl, oPlayerCursorY
