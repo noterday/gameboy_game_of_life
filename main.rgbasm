@@ -572,6 +572,10 @@ ClearCellsRandom2:
 
 
 InitIterationState:
+	ld a, 0
+	ldh [hLastRowTopBit], a
+	ldh [hSavedNeighboursBit0], a
+	ldh [hSavedNeighboursBit7], a
 	ld a, [wReturnToPlayerInput]
 	cp 1
 	jr z, .ret
@@ -610,19 +614,6 @@ DoIterationState:
 .choose_buffer2:
 	ld hl, wCells2 + CELL_ROW 	; If 1, Using wCells2
 .done_choosing_buffer
-
-; Exceptional edge checks we need to handle whenever we start a new line
-; TODO : This shouldn't really need to happens anymore if we are moving tilemap stuff in a different loop
-.iterate_new_row:
-	; For now, the handling rule is to just clear these registers and do nothing
-	; Later, there will be ways to connect the edges to "wrapparound"
-	ld a, 0
-	ld b, a ; Clear the middle byte
-	ld d, a ; Clear the top byte
-	ld e, a ; Clear the bottom byte
-	ldh [hSavedNeighboursBit7], a ; Clear the "in-between bytes" neighbour count
-	ldh [hSavedNeighboursBit0], a ; Clear the "in-between bytes" neighbour count
-	jp .setup_new_iterated_bytes
 
 ; Start of the iteration loop
 ; When switching to a new byte in the same row, the code jumps here
@@ -665,15 +656,37 @@ DoIterationState:
 .bit0_check:
 	ldh a, [hSavedNeighboursBit0]
 	ld c, a ; Load the previous C
-	check_neighbour_bit 7, d ; Top-Right bit
-	check_neighbour_bit 7, b ; Right bit
-	check_neighbour_bit 7, e ; Bottom-Right bit
-	dec l	; We get to the previous byte
+
+	ld a, l
+	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
+	jp z, .bit0_new_row_behavior
+.bit0_normal_behavior:
+	check_neighbour_bit 7, d 	; Top-Right bit
+	check_neighbour_bit 7, b 	; Right bit
+	check_neighbour_bit 7, e 	; Bottom-Right bit
+	jp .bit0_both_cases
+; If we are at the start of a new ROW, then the code bellow needs to load new bytes that are adjusted upward by 1,
+; Thats because the rightmost bit of the previous iteration is actually the one at the end of the row above us right now,
+; so it's wrapped around right neighbour is actually above us..
+.bit0_new_row_behavior:
+	check_neighbour_bit 7, d 	; Right bit
+	check_neighbour_bit 7, b 	; Bottom-Right bit
+	; We need the byte above our top row
+	;a To have access to this, each time we get here, at the start of a row, we store the top row for the next one
+	push de
+	ld a, [hLastRowTopBit]
+	ld d, a
+	check_neighbour_bit 7, d 	; Right bit
+	ld a, d
+	pop de
+	ld [hLastRowTopBit], a		; Store our current top byte so the next row's similar check has the value available
+.bit0_both_cases:
+	dec l		; We get to the previous byte
 	ld a, c		; We need to check C
 	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
 	bit 7, c	; Is the current cell live?
 	game_of_life_cell_update_logic 0
-	inc l	; We get back to the current byte
+	inc l		; We get back to the current byte
 
 .bit7_check:
 	; Bit 7 Checks (started using the previous d,b,e values earlier)
@@ -698,10 +711,8 @@ DoIterationState:
 	game_of_life_neighbours_count 3,2,1 ; Bit 2 checks
 	game_of_life_neighbours_count 2,1,0 ; Bit 1 checks
 
-; TODO: This entire section, down to .end_of_special_case_for_edges, only should occur when you aren't on the edge bit (the fourth one)
-; If we detect here that are are on the edge, we do a completely different branch of code that uses different bytes for the 0 and 7 count
-; There may also  need to be a special case for the top and bottom lines
-.special_case_for_edges:
+; Handling for the edge bits of this current byte and the next one (neighbour counts that need to be done over two iteration of the loop)
+.edge_cases:
 	; Bit 0 checks (only the left and center neighbours are available, the rest is done while loading the next byte)
 	ld c, 0 ; Clear C
 	; Left
@@ -711,9 +722,6 @@ DoIterationState:
 	; Center
 	check_neighbour_bit 0, d ; Top bit
 	check_neighbour_bit 0, e ; Bottom bit
-
-; Saving some extra info to prepare for the byte transition
-	; Save some data for bit 0 of this loop into HRAM to finish processing it with the upcoming bytes
 	bit 0, b 	; We need to remember byte 0 for later
 	jr z, .dont_set_extra_bit
 	set 7, c	; If bit 0 in B was on, we need to remember that by making bit 7 in C on (it's high nybble goes unused)
@@ -721,6 +729,26 @@ DoIterationState:
 	ld a, c 
 	ldh [hSavedNeighboursBit0], a ; We'll recover this value next iteration once we loaded our new bytes to the right
 	
+	; Bit7 (rightmost) of upcoming byte will need to know its left neighbours, so we count them while we have them
+	; Uses completely different values, which are shifted down by 1 row, if we are on the final collumn
+	ld a, l
+	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
+	cp 3			; Addr Mod 4 will give 3 if we are one the final collumn of the row
+	jp nz, .bit_7_checks	; If not on the final collumn, no adjustment is needed and we do the checks as normal
+; Adjustment to what registers are used when we are dealing with the end of a row.
+; In that case, the left neighbour is one row bellow us
+.bit_7_new_row_alligment:
+	; load registers to have the bytes that are one row bellow
+	; Note: Even though we lose the correct byte values, there is nothing else that uses them after
+	ld d, b		; Store the middle (b) into the top (d)
+	ld b, e		; Store the bottom (e) into the middle (b)
+	pop hl		; We need to recover the proper HL for adressing
+	push hl		; Only need to push back the value so it can be popped normally later down the line
+	ld a, l
+	add CELL_ROW*2
+	ld l, a		; We have the address for row under our bottom row
+	ld e, [hl]	; Get the the new bottom byte
+.bit_7_checks:
 	; Save the neighbours we will need for bit 7
 	ld c, 0 ; Clear C
 	check_neighbour_bit 0, d ; Top-Left bit
@@ -728,7 +756,7 @@ DoIterationState:
 	check_neighbour_bit 0, e ; Bottom-Left bit
 	ld a, c 
 	ldh [hSavedNeighboursBit7], a	; We will use this when processing bit 7 next iteration
-.end_of_special_case_for_edges
+	jp .increment_loop
 
 ; Getting the next byte and loop management
 .increment_loop:
@@ -743,8 +771,6 @@ DoIterationState:
 	jr z, .finish_iterating			; If we are done, we exit the loop
 
 	; Test if the byte we are checking was at the end of a row
-	and a, %00000011	; Modulo 4, which is our row length (CELL_ROW)
-	jp z, .iterate_new_row; Jump to the new row code, which clears the b,d,e registers
 	jp .setup_new_iterated_bytes; Iterate over the next byte if we didn't exit and didn't jump to a new row
 
 .finish_iterating:
@@ -1766,6 +1792,7 @@ SECTION "OAM", OAM
 SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db	; Stores the neighbor count of bit 0 (the rightmost bit) in between two iterated bytes
 	hSavedNeighboursBit7: db	; IDEM, but stores the neighbor  count of bit 7
+	hLastRowTopBit:	db		; Stores the the top byte during an iteration, of the previous leftmost collumn
 	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
 	hOamQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
 	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
