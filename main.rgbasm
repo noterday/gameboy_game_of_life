@@ -677,8 +677,8 @@ DoIterationState:
 	ld a, [hLastRowTopBit]
 	ld d, a
 	check_neighbour_bit 7, d 	; Right bit
-	ld a, d
 	pop de
+	ld a, d 
 	ld [hLastRowTopBit], a		; Store our current top byte so the next row's similar check has the value available
 .bit0_both_cases:
 	dec l		; We get to the previous byte
