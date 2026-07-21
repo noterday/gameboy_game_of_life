@@ -2,9 +2,7 @@ INCLUDE "hardware.inc"
 
 DEF WORD_SIZE EQU 65535
 DEF CELL_TOTAL EQU 128 
-DEF DOUBLE_CELL_TOTAL EQU 256
 DEF CELL_ROW EQU 4
-DEF DOUBLE_CELL_ROW EQU 8
 ; Game states
 DEF STATE_ITERATING EQU 0
 DEF STATE_PLAYER_INPUT EQU 1
@@ -603,7 +601,7 @@ DoIterationState:
 	; Clear the input buffer
 	ld a, 0
 	ld [wKeyBuffer], a
-	ld hl, wCells + CELL_ROW	; If 0, use wCells
+	ld hl, wCells			; If 0, use wCells
 
 	; Choose a cell grid to iterate. The game switches between two buffers each turn.
 .choose_a_buffer:
@@ -612,7 +610,7 @@ DoIterationState:
 	jr nz, .choose_buffer2		; If not zero, use "wCells2"
 	jr .done_choosing_buffer
 .choose_buffer2:
-	ld hl, wCells2 + CELL_ROW 	; If 1, Using wCells2
+	ld hl, wCells2			; If 1, Using wCells2
 .done_choosing_buffer
 
 ; Start of the iteration loop
@@ -633,15 +631,39 @@ DoIterationState:
 	ld e, [hl] 	; The bottom byte is now in E
 	; Move HL to point to the top byte
 	ld l, a
-	sub a, DOUBLE_CELL_ROW
+	sub a, CELL_ROW*2
 	ld l, a;
 	ld d, [hl] 	; The top byte is now in D
-	; Make HL point to the other buffer
 	add a, CELL_ROW
-	ld l, a ; We get back the original address
-
+	ld l, a 	; We get back the original address
+; See if we are in the first row, if so, wrapparound the top
+.first_row_exception:
+	ld a, l
+	res 7, a	; The following check shouldn't differenciate between buffer 1 and  2
+	cp CELL_ROW+1
+	jp nc, .final_row_exception
+	; If we areinthe first row,the top byte should be at the bottom
+	ld a, l
+	add (CELL_TOTAL - CELL_ROW)	; Brings the L value, which is 0-3, into the last 4 available values
+	ld l, a
+	ld d, [hl]
+	sub (CELL_TOTAL - CELL_ROW)	; Cancel out the move in address that was just done
+	ld l, a
+	jp .swap_buffers
+; See if we are in the final row, if so, wrapparound the bottom
+.final_row_exception:
+	ld a, l
+	res 7, a	; The following check shouldn't differenciate between buffer 1 and  2
+	cp (CELL_TOTAL - CELL_ROW)
+	jp c, .swap_buffers
+	ld a, l
+	sub (CELL_TOTAL - CELL_ROW)
+	ld l, a
+	ld e,[hl]
+	add (CELL_TOTAL - CELL_ROW)
+	ld l, a
 ; Swap the buffer from the one we read to, to the one we want to write into
-.swap_buffers
+.swap_buffers:
 	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
 	cp 0
 	jr nz, .swap_to_buffer1
@@ -765,16 +787,15 @@ DoIterationState:
 
 	; We test if we hit the end of either cell grids, and exit the loop if so
 	ld a, l 				; We need to check where L is
-	cp LOW(wCells)+CELL_TOTAL-CELL_ROW-1	; Compare to the end of wCells
+	cp LOW(wCells)+CELL_TOTAL-1		; Compare to the end of wCells
 	jr z, .finish_iterating			; If we are done, we exit the loop
-	cp LOW(wCells2)+CELL_TOTAL-CELL_ROW-1	; Compare to the end of wCells2 
+	cp LOW(wCells2)+CELL_TOTAL-1		; Compare to the end of wCells2 
 	jr z, .finish_iterating			; If we are done, we exit the loop
 
 	; Test if the byte we are checking was at the end of a row
 	jp .setup_new_iterated_bytes; Iterate over the next byte if we didn't exit and didn't jump to a new row
 
 .finish_iterating:
-	; TODO : Here, there should be special handling for the top and bottom row that we skipped
 .visual_updates:
 	ld hl, wCells				; We are going to loop over both cell buffers
 .tilemap_update_loop:
