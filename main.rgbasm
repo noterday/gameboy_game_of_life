@@ -386,7 +386,6 @@ EntryPoint:
 	ld [hli], a
 	dec e
 	jr nz, .add_window_tile
-	nop
 ; Set the Window Position
 	ld a, 128
 	ld [rWY], a
@@ -535,6 +534,15 @@ ClearCellsSquare:
 	call ToggleCellAtHL
 	ld hl, _SCRN0 + ((1+CELL_ROW*8)*8)+2
 	call ToggleCellAtHL
+	; Test pattern in the corners
+	ld hl, _SCRN0
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (CELL_ROW*8)-1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (CELL_TOTAL*8)-1
+	call ToggleCellAtHL
+	ld hl, _SCRN0 + (CELL_TOTAL*8)-((CELL_ROW*8))
+	call ToggleCellAtHL
 	ret
 
 
@@ -601,10 +609,10 @@ DoIterationState:
 	; Clear the input buffer
 	ld a, 0
 	ld [wKeyBuffer], a
-	ld hl, wCells			; If 0, use wCells
-
-	; Choose a cell grid to iterate. The game switches between two buffers each turn.
+	ldh [hFinalIterationSpecialCase], a
 .choose_a_buffer:
+	ld hl, wCells			; If 0, use wCells
+	; Choose a cell grid to iterate. The game switches between two buffers each turn.
 	ld a, [wGridToggle]		; Use wGridToggle to choose which buffer to iterate
 	cp 0
 	jr nz, .choose_buffer2		; If not zero, use "wCells2"
@@ -612,6 +620,7 @@ DoIterationState:
 .choose_buffer2:
 	ld hl, wCells2			; If 1, Using wCells2
 .done_choosing_buffer
+
 
 ; Start of the iteration loop
 ; When switching to a new byte in the same row, the code jumps here
@@ -629,9 +638,23 @@ DoIterationState:
 	add a, CELL_ROW
 	ld l, a
 	ld e, [hl] 	; The bottom byte is now in E
-	; Move HL to point to the top byte
+	sub a, CELL_ROW	; Return to the start byte (the current one)
+	; Move HL to point to the top byte (with special case for the first byte)
+	cp 0		; If it's 0 exactly
+	jp nz, .normal_top_byte	; Then we do the first row exception
+	; First byte exception
+	add a, CELL_TOTAL-CELL_ROW		; Get the leftmost byte of the bottom row	
 	ld l, a
-	sub a, CELL_ROW*2
+	ld d, [hl]				; Put that byte in D
+	sub a, CELL_ROW				; Get the byte above the top byte
+	ld l, a
+	ld a, [hl]
+	ld [hLastRowTopBit], a			; Load the top byte of the top byte
+	and %10000000				; Get back to the start of our current buffer
+	ld l, a
+	jp .first_row_exception
+.normal_top_byte:
+	sub CELL_ROW
 	ld l, a;
 	ld d, [hl] 	; The top byte is now in D
 	add a, CELL_ROW
@@ -640,9 +663,9 @@ DoIterationState:
 .first_row_exception:
 	ld a, l
 	res 7, a	; The following check shouldn't differenciate between buffer 1 and  2
-	cp CELL_ROW+1
+	cp CELL_ROW
 	jp nc, .final_row_exception
-	; If we areinthe first row,the top byte should be at the bottom
+	; If we are in the first row, the top byte should be at the bottom
 	ld a, l
 	add (CELL_TOTAL - CELL_ROW)	; Brings the L value, which is 0-3, into the last 4 available values
 	ld l, a
@@ -673,6 +696,12 @@ DoIterationState:
 	res 7, l
 .swapped_buffers:
 
+; Test if we were just completing the wraparound for the first/final bytes
+	ld a, [hFinalIterationSpecialCase]
+	add l
+	res 7, a
+	cp 0
+	jp z, .increment_loop
 ; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
 ; Doing the counts for the right side of the previous byte (bit 0)
 .bit0_check:
@@ -691,10 +720,18 @@ DoIterationState:
 ; Thats because the rightmost bit of the previous iteration is actually the one at the end of the row above us right now,
 ; so it's wrapped around right neighbour is actually above us..
 .bit0_new_row_behavior:
+	; If we are at byte 0 and not wrapping round at the end, skip this check entirely
+	ld a, [hFinalIterationSpecialCase]
+	add l
+	res 7, a
+	cp 0
+	jp z, .bit7_check
+
+	; Do bit0
 	check_neighbour_bit 7, d 	; Right bit
 	check_neighbour_bit 7, b 	; Bottom-Right bit
 	; We need the byte above our top row
-	;a To have access to this, each time we get here, at the start of a row, we store the top row for the next one
+	; a To have access to this, each time we get here, at the start of a row, we store the top row for the next one
 	push de
 	ld a, [hLastRowTopBit]
 	ld d, a
@@ -702,14 +739,27 @@ DoIterationState:
 	pop de
 	ld a, d 
 	ld [hLastRowTopBit], a		; Store our current top byte so the next row's similar check has the value available
+
 .bit0_both_cases:
 	dec l		; We get to the previous byte
+	ld a, [hFinalIterationSpecialCase]
+	cp 1
+	jp nz, .not_the_final_loop
+	ld a, l
+	add CELL_TOTAL
+	ld l, a
+.not_the_final_loop:
 	ld a, c		; We need to check C
 	and %00001111	; We clear the "old 0th cell" info we hid in the high nibble
 	bit 7, c	; Is the current cell live?
 	game_of_life_cell_update_logic 0
 	inc l		; We get back to the current byte
-
+	ld a, [hFinalIterationSpecialCase]
+	cp 1
+	jp nz, .bit7_check
+	ld a, l
+	sub CELL_TOTAL
+	ld l, a
 .bit7_check:
 	; Bit 7 Checks (started using the previous d,b,e values earlier)
 	; Top
@@ -724,6 +774,7 @@ DoIterationState:
 	ld a, c		; We need to check C
 	bit 7, b	; Is the current cell live?
 	game_of_life_cell_update_logic 7 ; We update byte 7 in the other buffer according to GoL rules
+
 .bit6to1_check:
 	; Do the neighbor count and updates for bit 6-1 (no special logic needed for the center)
 	game_of_life_neighbours_count 7,6,5 ; Bit 6 checks
@@ -785,17 +836,28 @@ DoIterationState:
 	pop hl		; This returns us to the buffer we are currently checking, instead of the one we are updating
 	inc l 		; Get the next byte to check
 
+	; Test if we are completely finished (one more loop after the buffer was finished)
+	ldh a, [hFinalIterationSpecialCase]
+	cp 1
+	jp z, .visual_updates
+
 	; We test if we hit the end of either cell grids, and exit the loop if so
 	ld a, l 				; We need to check where L is
-	cp LOW(wCells)+CELL_TOTAL-1		; Compare to the end of wCells
+	cp LOW(wCells)+CELL_TOTAL		; Compare to the end of wCells
 	jr z, .finish_iterating			; If we are done, we exit the loop
-	cp LOW(wCells2)+CELL_TOTAL-1		; Compare to the end of wCells2 
+	cp 0					; Compare to the end of wCells2 
 	jr z, .finish_iterating			; If we are done, we exit the loop
 
-	; Test if the byte we are checking was at the end of a row
+	; Loop around
 	jp .setup_new_iterated_bytes; Iterate over the next byte if we didn't exit and didn't jump to a new row
 
 .finish_iterating:
+	; This makes us do a final, shorter loop to cleanup the first/final bytes and their weird wrapparound rules
+	ld a, 1
+	ldh [hFinalIterationSpecialCase], a
+	jp .choose_a_buffer
+
+; For the very final cell of the grid, it won't have it's 0th bit completed since that's usually done after looping back
 .visual_updates:
 	ld hl, wCells				; We are going to loop over both cell buffers
 .tilemap_update_loop:
@@ -865,12 +927,11 @@ DoIterationState:
 	cp 0
 	jr nz, .cleaning_up_tilemap_queue
 .finish_visual_loop:
-
 	; Increment the loop and test if we are done
 	pop hl
 	inc l 					; Get the next byte to check
 	ld a, l 				; We need to check where L is
-	cp LOW(wCells)+CELL_TOTAL-1		; Compare to the end of wCells
+	cp LOW(wCells)+CELL_TOTAL		; Compare to the end of wCells
 	jp nz, .tilemap_update_loop
 
 
@@ -1060,9 +1121,6 @@ InitInputState:
 DoInputState:
 	; Wait for the screen to be cleared up
 	call WaitForScreenUpdate
-	nop
-	nop
-	nop
 .check_start_button:
 	; If player presses "start", return to iteration
 	ld a, [wNewKeys]	; Get the "just pressed" inputs
@@ -1310,7 +1368,6 @@ InitTitleScreen:
 	call ClearTilemap
 
 ;2. Draw the menu options on screen
-	nop
 	; Text add in hl, position in de
 	ld a, HIGH(TITLE_MENU_01)
 	ld h, a
@@ -1814,6 +1871,7 @@ SECTION "High Ram", HRAM
 	hSavedNeighboursBit0: db	; Stores the neighbor count of bit 0 (the rightmost bit) in between two iterated bytes
 	hSavedNeighboursBit7: db	; IDEM, but stores the neighbor  count of bit 7
 	hLastRowTopBit:	db		; Stores the the top byte during an iteration, of the previous leftmost collumn
+	hFinalIterationSpecialCase:db	; Switched to 1 to do one final loop of the iteration process
 	hTileQueueCursor: db 	; The low-byte of the address to write to next in 'wTileUpdateQueue"
 	hOamQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
 	hWindowQueueCursor: db 	; The low-byte of the address to write to next in 'wOamUpdateQueue"
