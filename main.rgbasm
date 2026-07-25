@@ -1173,7 +1173,7 @@ DoInputState:
 	ld a, [wPlayerCursorGridY]
 	cp 32
 	jr nz, .camera_scroll_check_bottom
-	ld a, 31
+	ld a, 0
 	ld [wPlayerCursorGridY], a
 .camera_scroll_check_bottom
 	; Calculate the cursor position in pixels (times 8)
@@ -1184,10 +1184,10 @@ DoInputState:
 	; Compare it to the camera position (bottom)
 	ld a, [rSCY]	; Load the camera position (top)
 	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
-	cp e
-	jr nc, .do_up
-	cp 126 ; Limit where the scrolling reached the end
-	jr nc, .do_up
+	;cp e
+	;jr nc, .do_up
+	;cp 126 ; Limit where the scrolling reached the end
+	;jr nc, .do_up
 	ld a, [wScrollY]
 	add 8
 	ld [wScrollY], a
@@ -1203,7 +1203,7 @@ DoInputState:
 	ld a, [wPlayerCursorGridY]
 	cp $FF
 	jr nz, .camera_scroll_check_top
-	ld a, 0
+	ld a, 31
 	ld [wPlayerCursorGridY], a
 .camera_scroll_check_top
 	; Calculate the cursor position in pixels (times 8)
@@ -1213,10 +1213,10 @@ DoInputState:
 	ld e, a
 	ld a, [rSCY]	; Load the camera position (top)
 	inc a
-	cp e
-	jr c, .do_left
-	cp 9 ; Limit where you finished scrolling up
-	jr c, .do_left
+	;cp e
+	;r c, .do_left
+	;cp 9 ; Limit where you finished scrolling up
+	;jr c, .do_left
 	ld a, [wScrollY]
 	sub 8
 	ld [wScrollY], a
@@ -1233,7 +1233,7 @@ DoInputState:
 	ld a, [wPlayerCursorGridX]
 	cp $FF
 	jr nz, .camera_scroll_check_left
-	ld a, 0
+	ld a, 31
 	ld [wPlayerCursorGridX], a
 .camera_scroll_check_left
 	; Calculate the cursor position in pixels (times 8)
@@ -1243,10 +1243,10 @@ DoInputState:
 	ld e, a
 	ld a, [rSCX]
 	inc a
-	cp e
-	jr c, .do_right
-	cp 3 ; Limit where you finished scrolling left
-	jr c, .do_right
+;	cp e
+;	jr c, .do_right
+;	cp 3 ; Limit where you finished scrolling left
+;	jr c, .do_right
 	ld a, [wScrollX]
 	sub 8
 	ld [wScrollX], a
@@ -1263,7 +1263,7 @@ DoInputState:
 	ld a, [wPlayerCursorGridX]
 	cp 32
 	jr nz, .camera_scroll_check_right
-	ld a, 31
+	ld a, 0
 	ld [wPlayerCursorGridX], a
 .camera_scroll_check_right
 	; Calculate the cursor position in pixels (times 8)
@@ -1275,10 +1275,10 @@ DoInputState:
 	ld a, [rSCX]	; Load the camera position (left)
 	add (160-24)	; Adding screen size minus a few pixels
 	; If cursor pixel position is within n of camera bottom, queue scroll the camera by 8 pixel
-	cp e
-	jr nc, .update_sprite_position
-	cp 96+(160-24) ; Limit where the scrolling reached the end
-	jr nc, .update_sprite_position
+	;cp e
+	;jr nc, .update_sprite_position
+	;cp 96+(160-24) ; Limit where the scrolling reached the end
+	;jr nc, .update_sprite_position
 	ld a, [wScrollX]
 	add 8
 	ld [wScrollX], a
