@@ -1711,18 +1711,28 @@ DrawText:
 	ret
 
 DoSoundDraw:
-	nop
-	nop
+	; 2 empty bit and Timer lenght
+	ld a, %00111000
+	ld [rNR41], a
+	; Volume and envelope
+	ld a, %11000001
+	ld [rNR42], a
+	; Freq and randomness
+	ld a, %01100111
+	ld [rNR43], a
+	; Enable, timer enable, 6 nothing bits
+	ld a, %11100100
+	ld [rNR44], a
 	ret
 
 DoSoundMenu:
-	ld a, %11110101
+	ld a, %11100101
 	ld [rNR10], a
 	; 2 bit for the wave duty (shape of it?) and 6 for the initial timer (higher means shorter sound)
 	ld a, %01011110
 	ld [rNR11], a
 	; Enveloppe : 4 bit initial volume, 1 bit direction, 3 bit sweep pace
-	ld a, %01111011
+	ld a, %01110010
 	ld [rNR12], a
 	ld a, %00011111
 	ld [rNR13], a
