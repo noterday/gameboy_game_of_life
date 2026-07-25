@@ -391,6 +391,13 @@ EntryPoint:
 	ld [rWY], a
 	ld a, 7
 	ld [rWX], a
+; Turn sound on
+	ld a, $80
+	ld [rNR52], a
+	ld a, $77
+	ld [rNR50], a
+	ld a, $FF
+	ld [rNR51], a
 ; turn the LCD on
 	turn_screen_on
 ; HW interrupt code
@@ -867,7 +874,6 @@ DoIterationState:
 	ld b, h
 	ld c, l		; BC is now a valid VRAM address, where our tilemap representation of the cells is
 
-
 	; Set HL to a position in the tile update queue
 	ld h, HIGH(wTileUpdateQueue)
 	ld a, [hTileQueueCursor]
@@ -1136,6 +1142,7 @@ DoInputState:
 	call UpdateCellAtCursor
 	ld a, 1
 	ld [wCellTileMapUpdateReady], a
+	call DoSoundDraw
 	halt
 .check_b_button ; Move forward one tick if B is pressed
 	ld a, d
@@ -1481,6 +1488,7 @@ DoTitleScreen:
 	call QueueOamUpdate
 	; Switch to the iteration state
 	turn_screen_on		; Turn the LCD on again
+	call DoSoundMenu
 	jp NextState
 
 
@@ -1702,6 +1710,25 @@ DrawText:
 	inc de
 	ret
 
+DoSoundDraw:
+	nop
+	nop
+	ret
+
+DoSoundMenu:
+	ld a, %11110101
+	ld [rNR10], a
+	; 2 bit for the wave duty (shape of it?) and 6 for the initial timer (higher means shorter sound)
+	ld a, %01011110
+	ld [rNR11], a
+	; Enveloppe : 4 bit initial volume, 1 bit direction, 3 bit sweep pace
+	ld a, %01111011
+	ld [rNR12], a
+	ld a, %00011111
+	ld [rNR13], a
+	ld a, %11000111
+	ld [rNR14], a
+	ret
 
 ; Other useful routines
 
