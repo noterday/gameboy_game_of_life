@@ -953,8 +953,8 @@ DoIterationState:
 	jr z, .check_up
 	; Scroll down
 	ld a, c
-	cp 126
-	jr nc, .check_up; Skip scrolling if you hit the down limit
+	;cp 126
+	;jr nc, .check_up; Skip scrolling if you hit the down limit
 	add e
 	ld [wScrollY], a
 .check_up
@@ -965,7 +965,7 @@ DoIterationState:
 	; Scroll up
 	ld a, c
 	sub e
-	jr c, .scroll_to_top_bound	; Skip scrolling if you hit the up limit
+	;jr c, .scroll_to_top_bound	; Skip scrolling if you hit the up limit
 	ld [wScrollY], a
 	jr .check_left
 .scroll_to_top_bound
@@ -978,7 +978,7 @@ DoIterationState:
 	jr z, .check_right
 	ld a, b 			; Get the X Scroll position
 	sub e				; Scroll left by E pixels
-	jr c, .scroll_to_left_bound	; If scroll would wrapparound, just make the scroll value 0 instead
+	;jr c, .scroll_to_left_bound	; If scroll would wrapparound, just make the scroll value 0 instead
 	ld [wScrollX], a
 	jr .check_right
 .scroll_to_left_bound
@@ -990,8 +990,8 @@ DoIterationState:
 	jr z, .check_input_state_buttons
 	; Scroll right
 	ld a, b
-	cp 96	; How large you can go without camera looping left
-	jr nc, .check_input_state_buttons	; Skip scrolling if you hit the right limit
+	;cp 96	; How large you can go without camera looping left
+	;jr nc, .check_input_state_buttons	; Skip scrolling if you hit the right limit
 	add e
 	ld [wScrollX], a
 .check_input_state_buttons:
@@ -1245,7 +1245,7 @@ DoInputState:
 	inc a
 	cp e
 	jr c, .do_right
-	cp 9 ; Limit where ou finished scrolling left
+	cp 3 ; Limit where you finished scrolling left
 	jr c, .do_right
 	ld a, [wScrollX]
 	sub 8
@@ -1912,6 +1912,6 @@ SECTION "Text", ROM0
 	TITLE_MENU_01: db "  a. Empty Grid     ", 255
 	TITLE_MENU_02: db "  b. Square         ", 255
 	TITLE_MENU_03: db "  c. Spaceship      ", 255
-	TITLE_MENU_04: db "  b. Quarter Noise", 255
-	TITLE_MENU_05: db "  b. Half Noise", 255
+	TITLE_MENU_04: db "  d. Quarter Noise", 255
+	TITLE_MENU_05: db "  e. Half Noise", 255
 	TITLE: db "     Game of Life", 255
