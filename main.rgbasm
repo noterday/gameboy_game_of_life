@@ -1033,7 +1033,6 @@ DoIterationState:
 
 
 InitInputState:
-	turn_screen_off_safely
 	; Prevent cell update temporarily
 	ld a, 0
 	ld [wCellTileMapUpdateReady], a
@@ -1072,7 +1071,6 @@ InitInputState:
 	jr .cursor_adjust_needed
 .cursor_adjust_up
 	ld a, [rSCY]	; Load the camera Y register
-	add 16 		; a position slightly offset from the edge of the screen
 	ld d, a		; D stores the top bound
 	add 112 	; a position slightly offset from the right edge
 	ld e, a		; E stores the bottom bound
@@ -1087,7 +1085,7 @@ InitInputState:
 	jr .cursor_adjust_needed
 .cursor_adjust_down
 	cp e
-	jr c, .top_rows_check
+	jr c, .ret
 	jr .cursor_adjust_needed
 .cursor_adjust_needed
 	; Get the coordinates at the center of the screen
@@ -1105,21 +1103,11 @@ InitInputState:
 	rrca
 	add 8
 	ld [wPlayerCursorGridY], a
-.top_rows_check
-	; Don't let the cursor start on the top two rows, that can get weird
-	; with the wrapparound and window layer
-	ld a, [wPlayerCursorGridY]
-	cp 0
-	jp z, .ret_for_real
-	cp 1
-	jp z, .ret_for_real
-	ld a, 3
+	cp $20
+	jp c, .ret
+	ld a, 0
 	ld [wPlayerCursorGridY], a
-	ld a, [rSCY]
-	add 32
-	ld [rSCY], a
-.ret_for_real
-	turn_screen_on
+.ret
 	ret
 
 
