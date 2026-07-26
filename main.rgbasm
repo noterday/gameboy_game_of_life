@@ -694,12 +694,12 @@ DoIterationState:
 	res 7, l
 .swapped_buffers:
 
-; Test if we were just completing the wraparound for the first/final bytes
+; If we are on byte one, skip most of the work. We will complete it when wrapping around from the final byte
 	ld a, [hFinalIterationSpecialCase]
 	add l
 	res 7, a
 	cp 0
-	jp z, .increment_loop
+	jp z, .edge_cases
 ; We start by a special case for the rightmost cell of the last loop's cell, and the left cell of the current byte
 ; Doing the counts for the right side of the previous byte (bit 0)
 .bit0_check:
