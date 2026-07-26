@@ -8,3 +8,8 @@ Tested in Emulicious and Mister.
 - B: Tick forward one generation
 - Start: Switch between Drawing / Play state
 - Select: Reset
+
+## Screenshots
+![Alt text](https://img.itch.zone/aW1nLzI4NzU5Njc3LnBuZw==/original/PDvyqJ.png)
+![Alt text](https://img.itch.zone/aW1nLzI4NzU5NjgwLnBuZw==/original/g%2Bdb6%2B.png)
+![Alt text](https://img.itch.zone/aW1nLzI4NzU5Njg4LnBuZw==/original/NJSVxr.png)
