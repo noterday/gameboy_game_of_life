@@ -3,6 +3,8 @@ Done slowly throughout the first half of 2026, to learn a lot of assembly progra
 With insight, there are many things I would likely change, but it is stable and runs at a reasonable speed.
 Tested in Emulicious and Mister.
 
+[Playable online](https://noterday.itch.io/gameboy-game-of-life)
+
 ## Controls
 - A: Draw
 - B: Tick forward one generation
