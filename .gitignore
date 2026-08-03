@@ -1,3 +1,5 @@
 *.o
 *.sym
 *.old
+Emulicious
+Emulicious/*
